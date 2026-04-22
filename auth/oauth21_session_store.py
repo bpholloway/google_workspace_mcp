@@ -22,7 +22,7 @@ except ImportError:  # pragma: no cover - Windows
 
 from fastmcp.server.auth import AccessToken
 from google.oauth2.credentials import Credentials
-from auth.oauth_config import is_external_oauth21_provider
+from auth.oauth_config import is_external_oauth21_provider, is_stateless_mode
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,56 @@ def _get_default_oauth_state_file() -> str:
                 base_dir = os.path.join(os.getcwd(), ".credentials")
 
     return os.path.join(base_dir, "oauth_states.json")
+
+
+def _merge_refresh_material_from_disk(
+    credentials: Credentials, user_email: Optional[str]
+) -> Credentials:
+    """Splice refresh_token/client_id/client_secret/token_uri from the on-disk
+    credential store into a Credentials object if they are missing.
+
+    FastMCP's GoogleProvider does not reliably expose refresh tokens through the
+    attribute layout our provider-cache reader expects, so credentials built from
+    a FastMCP AccessToken often have ``refresh_token=None``. The legacy OAuth
+    callback already persists a full credential file on initial auth, so we use
+    that file as the source of truth to make the in-memory credentials refresh-
+    capable. Without this, ``AuthorizedSession`` raises ``RefreshError`` once the
+    Google access token expires mid-session.
+    """
+    if credentials is None or not user_email:
+        return credentials
+    if credentials.refresh_token and credentials.client_id and credentials.client_secret:
+        return credentials
+    if is_stateless_mode():
+        return credentials
+
+    try:
+        from auth.credential_store import get_credential_store
+
+        stored = get_credential_store().get_credential(user_email)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            f"Could not load on-disk credentials for {user_email} to back-fill "
+            f"refresh token: {exc}"
+        )
+        return credentials
+
+    if not stored or not stored.refresh_token:
+        return credentials
+
+    merged = Credentials(
+        token=credentials.token,
+        refresh_token=credentials.refresh_token or stored.refresh_token,
+        token_uri=credentials.token_uri or stored.token_uri,
+        client_id=credentials.client_id or stored.client_id,
+        client_secret=credentials.client_secret or stored.client_secret,
+        scopes=credentials.scopes or stored.scopes,
+        expiry=credentials.expiry,
+    )
+    logger.debug(
+        f"Back-filled refresh material from on-disk credential store for {user_email}"
+    )
+    return merged
 
 
 def _normalize_expiry_to_naive_utc(expiry: Optional[Any]) -> Optional[datetime]:
@@ -688,6 +738,11 @@ class OAuth21SessionStore:
                     expiry=session_info.get("expiry"),
                 )
 
+                # If the session was seeded without refresh material (FastMCP
+                # provider cache miss), back-fill from the on-disk store so
+                # AuthorizedSession can refresh when the token expires.
+                credentials = _merge_refresh_material_from_disk(credentials, user_email)
+
                 logger.debug(f"Retrieved OAuth 2.1 credentials for {user_email}")
                 return credentials
 
@@ -1099,6 +1154,12 @@ def ensure_session_from_access_token(
         store_expiry = expiry
     else:
         store_expiry = credentials.expiry
+
+    # FastMCP's GoogleProvider does not expose refresh tokens through an API we
+    # can rely on, so the credentials above typically have refresh_token=None.
+    # Back-fill from the on-disk credential file so AuthorizedSession can refresh
+    # when the Google access token expires mid-session.
+    credentials = _merge_refresh_material_from_disk(credentials, email)
 
     # Skip session storage for external OAuth 2.1 to prevent memory leak from ephemeral tokens
     if email and not is_external_oauth21_provider():
