@@ -15,6 +15,7 @@ from starlette.middleware import Middleware
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.google import GoogleProvider
 
+from auth.persistent_google_provider import PersistentGoogleProvider
 from auth.oauth21_session_store import get_oauth21_session_store, set_auth_provider
 from auth.google_auth import handle_auth_callback, start_auth_flow, check_client_secrets
 from auth.oauth_config import is_oauth21_enabled, is_external_oauth21_provider
@@ -476,8 +477,13 @@ def configure_server_for_http():
                     "Protected resource metadata points to Google's authorization server"
                 )
             else:
-                # Standard OAuth 2.1 mode: use FastMCP's GoogleProvider
-                provider = GoogleProvider(
+                # Standard OAuth 2.1 mode: use our PersistentGoogleProvider so
+                # Google refresh tokens from the FastMCP token exchange are
+                # written to the on-disk credential store. The OAuth 2.1
+                # session-store backfill in auth/oauth21_session_store.py reads
+                # that file to make in-memory credentials refresh-capable; the
+                # FastMCP-internal callback never writes it otherwise.
+                provider = PersistentGoogleProvider(
                     client_id=config.client_id,
                     client_secret=config.client_secret,
                     base_url=config.get_oauth_base_url(),
