@@ -9,10 +9,12 @@ from typing import Dict, List, Optional, Any, Callable, Union, Tuple
 from contextlib import ExitStack
 
 from google.auth.exceptions import RefreshError
+from google.auth.transport.requests import Request
 from google.oauth2 import service_account as google_service_account
 from googleapiclient.discovery import build
 from fastmcp.server.dependencies import get_access_token, get_context
 from auth.google_auth import get_authenticated_google_service, GoogleAuthenticationError
+from auth.credential_store import get_credential_store
 from core.config import USER_GOOGLE_EMAIL as _ENV_USER_EMAIL
 from auth.oauth21_session_store import (
     get_auth_provider,
@@ -24,6 +26,7 @@ from auth.oauth_config import (
     get_oauth_config,
     is_external_oauth21_provider,
     is_service_account_enabled,
+    is_stateless_mode,
 )
 from core.context import set_fastmcp_session_id
 from auth.scopes import (
@@ -306,6 +309,70 @@ async def _authenticate_service(
         )
 
 
+def _refresh_and_persist_if_needed(
+    credentials: Any,
+    user_email: Optional[str],
+    session_id: Optional[str],
+    tool_name: str,
+) -> Any:
+    """Refresh expired OAuth 2.1 credentials before use and persist the rotation.
+
+    Without this, ``AuthorizedSession`` attempts a lazy refresh on the first API
+    call and raises ``RefreshError`` if the in-memory credentials are missing
+    refresh material. We refresh here so the rotated access token is written
+    back to both the on-disk credential store (for restart survival) and the
+    OAuth 2.1 session cache (for subsequent tool calls in this process).
+
+    Raises ``RefreshError`` on failure so the caller can surface a reauth
+    message to the user.
+    """
+    if credentials is None or credentials.valid:
+        return credentials
+    if not credentials.refresh_token:
+        # Nothing we can do; let the caller's build()/API call surface the error.
+        return credentials
+
+    logger.info(
+        f"[{tool_name}] OAuth 2.1 credentials expired for {user_email}; "
+        f"refreshing before service build"
+    )
+    credentials.refresh(Request())
+    logger.info(
+        f"[{tool_name}] Refreshed OAuth 2.1 credentials for {user_email}"
+    )
+
+    if user_email and not is_stateless_mode():
+        try:
+            get_credential_store().store_credential(user_email, credentials)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                f"[{tool_name}] Failed to persist refreshed credentials for "
+                f"{user_email} to disk: {exc}"
+            )
+
+    if user_email:
+        try:
+            get_oauth21_session_store().store_session(
+                user_email=user_email,
+                access_token=credentials.token,
+                refresh_token=credentials.refresh_token,
+                token_uri=credentials.token_uri,
+                client_id=credentials.client_id,
+                client_secret=credentials.client_secret,
+                scopes=credentials.scopes,
+                expiry=credentials.expiry,
+                mcp_session_id=session_id,
+                issuer="https://accounts.google.com",
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(
+                f"[{tool_name}] Failed to update OAuth 2.1 session cache after "
+                f"refresh for {user_email}: {exc}"
+            )
+
+    return credentials
+
+
 async def get_authenticated_google_service_oauth21(
     service_name: str,
     version: str,
@@ -351,6 +418,16 @@ async def get_authenticated_google_service_oauth21(
                 "Unable to build Google credentials from authenticated access token."
             )
 
+        try:
+            credentials = _refresh_and_persist_if_needed(
+                credentials, resolved_email, session_id, tool_name
+            )
+        except RefreshError as exc:
+            error_message = _handle_token_refresh_error(
+                exc, resolved_email, service_name
+            )
+            raise GoogleAuthenticationError(error_message) from exc
+
         scopes_available = set(credentials.scopes or [])
         if not scopes_available and getattr(access_token, "scopes", None):
             scopes_available = set(access_token.scopes)
@@ -382,6 +459,16 @@ async def get_authenticated_google_service_oauth21(
             f"Access denied: Cannot retrieve credentials for {user_google_email}. "
             f"You can only access credentials for your authenticated account."
         )
+
+    try:
+        credentials = _refresh_and_persist_if_needed(
+            credentials, user_google_email, session_id, tool_name
+        )
+    except RefreshError as exc:
+        error_message = _handle_token_refresh_error(
+            exc, user_google_email, service_name
+        )
+        raise GoogleAuthenticationError(error_message) from exc
 
     if not credentials.scopes:
         scopes_available = set(required_scopes)
