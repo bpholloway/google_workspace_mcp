@@ -30,6 +30,8 @@ def _load_startup_dependencies():
     from core.tool_tier_loader import resolve_tools_from_tier
     from core.tool_registry import (
         set_enabled_tools as set_enabled_tool_names,
+        resolve_disabled_tools,
+        set_disabled_tools,
         wrap_server_tool_method,
         filter_server_tools,
     )
@@ -47,6 +49,8 @@ def _load_startup_dependencies():
         configure_server_for_http,
         resolve_tools_from_tier,
         set_enabled_tool_names,
+        resolve_disabled_tools,
+        set_disabled_tools,
         wrap_server_tool_method,
         filter_server_tools,
     )
@@ -65,6 +69,8 @@ def _load_startup_dependencies():
     configure_server_for_http,
     resolve_tools_from_tier,
     set_enabled_tool_names,
+    resolve_disabled_tools,
+    set_disabled_tools,
     wrap_server_tool_method,
     filter_server_tools,
 ) = _load_startup_dependencies()
@@ -330,6 +336,16 @@ def main():
         help="Load tools based on tier level. Can be combined with --tools to filter services.",
     )
     parser.add_argument(
+        "--disabled-tools",
+        nargs="+",
+        metavar="TOOL_NAME",
+        help=(
+            "Block individual tools by name regardless of tier or permission selection. "
+            "Composes with every other filtering option. "
+            "Env var: WORKSPACE_MCP_DISABLED_TOOLS (comma-separated)."
+        ),
+    )
+    parser.add_argument(
         "--transport",
         choices=["stdio", "streamable-http"],
         default="stdio",
@@ -353,6 +369,10 @@ def main():
         ),
     )
     args = parser.parse_args()
+
+    # Subtractive, so it needs no conflict handling against the allowlist flags.
+    disabled_tools = resolve_disabled_tools(args.disabled_tools)
+    set_disabled_tools(disabled_tools)
 
     # Validate mutually exclusive flags
     if args.permissions and args.read_only:
@@ -442,6 +462,9 @@ def main():
         "GOOGLE_CLIENT_SECRET_PATH": os.getenv("GOOGLE_CLIENT_SECRET_PATH", "Not Set"),
         "GOOGLE_SERVICE_ACCOUNT_KEY_FILE": os.getenv(
             "GOOGLE_SERVICE_ACCOUNT_KEY_FILE", "Not Set"
+        ),
+        "WORKSPACE_MCP_DISABLED_TOOLS": (
+            ", ".join(sorted(disabled_tools)) if disabled_tools else "Not Set"
         ),
     }
 

@@ -196,17 +196,17 @@ uv run main.py --tools gmail drive calendar
 </td>
 <td valign="top" width="50%">
 
-**Secretless / Public OAuth 2.1 (PKCE) Quick Start**
+**OAuth 2.1 (PKCE)**
 
 ```bash
-# 1. Credentials
+# 1. Credentials - MCP clients connect with PKCE and no
+#    secret, but Google still requires one server-side
 export MCP_ENABLE_OAUTH21=true
 export GOOGLE_OAUTH_CLIENT_ID="..."
+export GOOGLE_OAUTH_CLIENT_SECRET="..."
 export WORKSPACE_MCP_PORT=8000
 export GOOGLE_OAUTH_REDIRECT_URI="http://localhost:${WORKSPACE_MCP_PORT}/oauth2callback"
 export OAUTHLIB_INSECURE_TRANSPORT=1
-# Leave GOOGLE_OAUTH_CLIENT_SECRET unset for public PKCE clients
-export FASTMCP_SERVER_AUTH_GOOGLE_JWT_SIGNING_KEY="$(openssl rand -hex 32)"
 
 # 2. Launch — OAuth 2.1 requires HTTP transport
 uvx workspace-mcp --transport streamable-http --tool-tier core
@@ -222,6 +222,8 @@ uv run main.py --transport streamable-http --tools gmail drive calendar
 </table>
 
 <sub>[Credential setup →](#-credential-configuration) · [All launch options →](#start-the-server) · [Tier details →](#tool-tiers)</sub>
+
+**Tool tiers** keep context windows lean: `core` is the essential set, `extended` adds management operations, `complete` loads everything. Combine with `--tools <service> ...`, `--read-only`, or per-service `--permissions`, and subtract individual tools with `--disabled-tools <name> ...`.
 
 <details open>
 <summary><b>Environment Variable Reference</b></summary>
