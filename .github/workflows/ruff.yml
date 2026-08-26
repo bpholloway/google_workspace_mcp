@@ -9,6 +9,13 @@ on:
 permissions:
   contents: write
 
+env:
+  # Pinned deliberately: ruff 0.16 expands the default rule set and changes
+  # formatter behaviour, which would rewrite the entire codebase. Bump this
+  # (and the `ruff` dev dependency in pyproject.toml) as a standalone,
+  # reviewed migration rather than letting `uvx` float to latest.
+  RUFF_VERSION: '0.15.22'
+
 jobs:
   ruff:
     runs-on: ubuntu-latest
@@ -28,8 +35,8 @@ jobs:
     - name: Auto-fix ruff lint and format
       if: github.event_name == 'pull_request'
       run: |
-        uv run ruff check --fix
-        uv run ruff format
+        uvx ruff@${{ env.RUFF_VERSION }} check --fix
+        uvx ruff@${{ env.RUFF_VERSION }} format
     - name: Commit and push fixes
       if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
       run: |
@@ -41,5 +48,5 @@ jobs:
         git push
     - name: Validate
       run: |
-        uv run ruff check
-        uv run ruff format --check
+        uvx ruff@${{ env.RUFF_VERSION }} check
+        uvx ruff@${{ env.RUFF_VERSION }} format --check
