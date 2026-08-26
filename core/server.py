@@ -4,6 +4,7 @@ import logging
 import os
 from typing import List, Optional
 from importlib import metadata
+from urllib.parse import urlparse
 
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from starlette.applications import Starlette
@@ -41,6 +42,69 @@ _auth_provider: Optional[GoogleProvider] = None
 _legacy_callback_registered = False
 
 session_middleware = Middleware(MCPSessionMiddleware)
+
+
+def _normalize_origin(origin: str) -> Optional[str]:
+    parsed = urlparse(origin)
+    if not parsed.scheme:
+        return None
+    if parsed.scheme == "vscode-webview":
+        return "vscode-webview://"
+    if not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    parsed = urlparse(origin)
+    return parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+def _get_allowed_http_origins() -> set[str]:
+    from auth.oauth_config import get_oauth_config
+
+    config = get_oauth_config()
+    origins = set()
+    for origin in config.get_allowed_origins():
+        normalized = _normalize_origin(origin)
+        if normalized:
+            origins.add(normalized)
+    if config.external_url:
+        normalized = _normalize_origin(config.external_url)
+        if normalized:
+            origins.add(normalized)
+    return origins
+
+
+class OriginValidationMiddleware:
+    """Reject browser-originated HTTP requests from untrusted origins."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers") or [])
+            raw_origin = headers.get(b"origin")
+            if raw_origin:
+                origin = raw_origin.decode("latin-1")
+                normalized = _normalize_origin(origin)
+                allowed = _get_allowed_http_origins()
+                if (
+                    not normalized
+                    or (normalized not in allowed and not _is_loopback_origin(origin))
+                ):
+                    logger.warning("Rejected HTTP request from Origin: %s", origin)
+                    response = JSONResponse(
+                        {"error": "Origin not allowed"}, status_code=403
+                    )
+                    await response(scope, receive, send)
+                    return
+
+        await self.app(scope, receive, send)
+
+
+origin_validation_middleware = Middleware(OriginValidationMiddleware)
 
 
 class WellKnownCacheControlMiddleware:
@@ -92,13 +156,17 @@ class SecureFastMCP(FastMCP):
 
         # Add middleware in order (first added = outermost layer)
         app.user_middleware.insert(0, well_known_cache_control_middleware)
+        app.user_middleware.insert(1, origin_validation_middleware)
 
         # Session Management - extracts session info for MCP context
-        app.user_middleware.insert(1, session_middleware)
+        app.user_middleware.insert(2, session_middleware)
 
         # Rebuild middleware stack
         app.middleware_stack = app.build_middleware_stack()
-        logger.info("Added middleware stack: WellKnownCacheControl, Session Management")
+        logger.info(
+            "Added middleware stack: WellKnownCacheControl, OriginValidation, "
+            "Session Management"
+        )
         return app
 
     async def list_tools(self, *, run_middleware: bool = True):
@@ -206,8 +274,10 @@ def configure_server_for_http():
 
     if oauth21_enabled:
         if not config.is_configured():
-            logger.warning("OAuth 2.1 enabled but OAuth credentials not configured")
-            return
+            raise RuntimeError(
+                "streamable-http transport requires GOOGLE_OAUTH_CLIENT_ID so OAuth 2.1 "
+                "protocol authentication can be configured."
+            )
 
         def validate_and_derive_jwt_key(
             jwt_signing_key_override: str | None, client_secret: str | None
@@ -515,7 +585,10 @@ def configure_server_for_http():
             )
             raise
     else:
-        logger.info("OAuth 2.0 mode - Server will use legacy authentication.")
+        logger.info(
+            "OAuth 2.0 legacy mode - streamable HTTP defaults to loopback unless "
+            "WORKSPACE_MCP_HOST is explicitly set."
+        )
         server.auth = None
         _auth_provider = None
         set_auth_provider(None)

@@ -1071,7 +1071,7 @@ def _prepare_gmail_message(
             elif file_path:
                 path_obj = validate_file_path(file_path)
                 if not path_obj.exists():
-                    logger.error(f"File not found: {file_path}")
+                    logger.error(f"File not found: path_len={len(file_path)}")
                     continue
 
                 with open(path_obj, "rb") as f:
@@ -1115,13 +1115,26 @@ def _prepare_gmail_message(
                 filename=safe_filename,
             )
             attached_count += 1
-            logger.info(f"Attached file: {safe_filename} ({len(file_data)} bytes)")
+            logger.info(
+                f"Attached file: filename_len={len(safe_filename)} "
+                f"({len(file_data)} bytes)"
+            )
+            logger.debug(f"Attached file: {safe_filename} ({len(file_data)} bytes)")
         except (binascii.Error, ValueError) as e:
-            logger.error(f"Failed to decode attachment {filename or file_path}: {e}")
+            logger.error(
+                f"Failed to decode attachment: "
+                f"filename_len={len(filename) if filename else 0}, "
+                f"path_len={len(file_path) if file_path else 0}, "
+                f"error_type={type(e).__name__}"
+            )
             attachment_errors.append(_format_attachment_error(file_path, filename, e))
             continue
         except Exception as e:
-            logger.error(f"Failed to attach {filename or file_path}: {e}")
+            logger.error(
+                f"Failed to attach: filename_len={len(filename) if filename else 0}, "
+                f"path_len={len(file_path) if file_path else 0}, "
+                f"error_type={type(e).__name__}"
+            )
             attachment_errors.append(_format_attachment_error(file_path, filename, e))
             continue
 
@@ -1246,8 +1259,9 @@ async def search_gmail_messages(
         Includes pagination token if more results are available.
     """
     logger.info(
-        f"[search_gmail_messages] Email: '{user_google_email}', Query: '{query}', Page size: {page_size}"
+        f"[search_gmail_messages] Email: '{user_google_email}', query_len={len(query)}, Page size: {page_size}"
     )
+    logger.debug(f"[search_gmail_messages] Query: '{query}'")
 
     # Build the API request parameters
     request_params = {"userId": "me", "q": query, "maxResults": page_size}
@@ -1698,11 +1712,13 @@ async def get_gmail_attachment_content(
         result = storage.save_attachment(
             base64_data=base64_data, filename=filename, mime_type=mime_type
         )
+        saved_filename = Path(result.path).name
 
         result_lines = [
             "Attachment downloaded successfully!",
             f"Message ID: {message_id}",
             f"Filename: {filename or 'unknown'}",
+            f"Saved filename: {saved_filename}",
             f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
         ]
 
@@ -1899,7 +1915,7 @@ async def send_gmail_message(
         )
     """
     logger.info(
-        f"[send_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}', Attachments: {len(attachments) if attachments else 0}"
+        f"[send_gmail_message] Invoked. Email: '{user_google_email}', subject_len={len(subject) if subject else 0}, Attachments: {len(attachments) if attachments else 0}"
     )
 
     # Prepare the email message
@@ -2118,7 +2134,7 @@ async def draft_gmail_message(
         )
     """
     logger.info(
-        f"[draft_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}'"
+        f"[draft_gmail_message] Invoked. Email: '{user_google_email}', subject_len={len(subject) if subject else 0}"
     )
 
     # Prepare the email message

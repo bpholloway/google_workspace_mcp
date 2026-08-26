@@ -5,7 +5,50 @@ import pytest
 import core.server as server_module
 
 
-def test_configure_server_for_http_uses_base_required_scopes(monkeypatch):
+def test_configure_server_for_http_allows_legacy_oauth_callback(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(server_module, "get_transport_mode", lambda: "streamable-http")
+    monkeypatch.setattr(
+        server_module, "set_auth_provider", lambda provider: calls.append(provider)
+    )
+    monkeypatch.setattr(
+        server_module,
+        "_ensure_legacy_callback_route",
+        lambda: calls.append("callback"),
+    )
+    monkeypatch.setattr(server_module, "_auth_provider", object())
+    monkeypatch.setattr(server_module.server, "auth", object())
+    monkeypatch.setattr(
+        "auth.oauth_config.get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: False,
+            is_configured=lambda: True,
+        ),
+    )
+
+    server_module.configure_server_for_http()
+
+    assert server_module.server.auth is None
+    assert server_module._auth_provider is None
+    assert calls == [None, "callback"]
+
+
+def test_configure_server_for_http_rejects_unconfigured_oauth21(monkeypatch):
+    monkeypatch.setattr(server_module, "get_transport_mode", lambda: "streamable-http")
+    monkeypatch.setattr(
+        "auth.oauth_config.get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: True,
+            is_configured=lambda: False,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="requires GOOGLE_OAUTH_CLIENT_ID"):
+        server_module.configure_server_for_http()
+
+
+def test_configure_server_for_http_uses_protocol_auth_required_scopes(monkeypatch):
     captured = {}
 
     class FakeGoogleProvider:

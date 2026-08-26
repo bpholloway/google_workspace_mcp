@@ -15,6 +15,8 @@ from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import httplib2
+import google_auth_httplib2
 from auth.scopes import SCOPES, get_current_scopes, has_required_scopes  # noqa
 from auth.oauth21_session_store import get_oauth21_session_store
 from auth.credential_store import get_credential_store
@@ -73,6 +75,21 @@ def get_default_credentials_dir():
 
 
 DEFAULT_CREDENTIALS_DIR = get_default_credentials_dir()
+
+
+def _build_authorized_http(
+    credentials: Credentials, timeout: int = 30
+) -> google_auth_httplib2.AuthorizedHttp:
+    """Return an httplib2.Http wrapped with credentials and a socket timeout.
+
+    Issue #835: googleapiclient.discovery.build() with credentials=credentials
+    creates an httplib2.Http() with no timeout (default None), causing
+    indefinite hangs on stalled TCP. We explicitly construct an
+    AuthorizedHttp with a timeout and pass it as the *http* argument.
+    """
+    http = httplib2.Http(timeout=timeout)
+    return google_auth_httplib2.AuthorizedHttp(credentials, http=http)
+
 
 # Session credentials now handled by OAuth21SessionStore - no local cache needed
 # Centralized Client Secrets Path Logic
@@ -1075,7 +1092,7 @@ def get_user_info(
     try:
         # Using googleapiclient discovery to get user info
         # Requires 'google-api-python-client' library
-        service = build("oauth2", "v2", credentials=credentials)
+        service = build("oauth2", "v2", http=_build_authorized_http(credentials))
         user_info = service.userinfo().get().execute()
         logger.info(f"Successfully fetched user info: {user_info.get('email')}")
         return user_info
@@ -1226,7 +1243,7 @@ async def get_authenticated_google_service(
         raise GoogleAuthenticationError(auth_response)
 
     try:
-        service = build(service_name, version, credentials=credentials)
+        service = build(service_name, version, http=_build_authorized_http(credentials))
         log_user_email = user_google_email
 
         # Try to get email from credentials if needed for validation

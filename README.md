@@ -238,14 +238,16 @@ uv run main.py --transport streamable-http --tools gmail drive calendar
 | `GOOGLE_MCP_CREDENTIALS_DIR` | | Credential directory — default `~/.google_workspace_mcp/credentials` |
 | **🖥️ Server** | | |
 | `WORKSPACE_MCP_BASE_URI` | | Base server URI (no port) — default `http://localhost` |
-| `WORKSPACE_MCP_PORT` | | Listening port — default `8000` |
-| `WORKSPACE_MCP_HOST` | | Bind host — default `0.0.0.0` |
+| `WORKSPACE_MCP_PORT` | | Listening port — default `8000`. Also controls the stdio-mode OAuth callback port. The `PORT` env var takes precedence if set. |
+| `WORKSPACE_MCP_HOST` | | Bind host — default `0.0.0.0` for OAuth 2.1 HTTP. Legacy streamable HTTP defaults to `127.0.0.1` unless this is explicitly set. |
+| `WORKSPACE_MCP_TRANSPORT` | | `stdio` or `streamable-http`; used when `--transport` is not passed |
+| `WORKSPACE_MCP_HTTP_PORT` | | Advanced legacy-stdio sidecar `/mcp` port for local `workspace-cli` access. Disabled when empty. Binds to `127.0.0.1` only and is accessible to local processes. |
 | `WORKSPACE_EXTERNAL_URL` | | External URL for reverse proxy setups |
 | `WORKSPACE_ATTACHMENT_DIR` | | Downloaded attachments dir and default trusted local attachment directory — default `~/.workspace-mcp/attachments/` |
 | `WORKSPACE_MCP_URL` | | Remote MCP endpoint URL for CLI |
 | `ALLOWED_FILE_DIRS` | | Colon-separated allowlist for local file reads |
 | **🔑 OAuth 2.1 & Multi-User** | | |
-| `MCP_ENABLE_OAUTH21` | | `true` to enable OAuth 2.1 multi-user support |
+| `MCP_ENABLE_OAUTH21` | | `true` to enable OAuth 2.1 multi-user support. Recommended for `--transport streamable-http`; legacy HTTP is local-only by default. |
 | `EXTERNAL_OAUTH21_PROVIDER` | | `true` for external OAuth flow with bearer tokens |
 | `WORKSPACE_MCP_STATELESS_MODE` | | `true` for stateless container-friendly operation |
 | `GOOGLE_OAUTH_REDIRECT_URI` | | Override OAuth callback URL — default auto-constructed |
@@ -416,6 +418,8 @@ uv run main.py
 
 **◆ HTTP Mode (Recommended)**
 ```bash
+export MCP_ENABLE_OAUTH21=true
+export GOOGLE_OAUTH_CLIENT_ID="..."
 uv run main.py \
   --transport streamable-http
 ```
@@ -493,6 +497,8 @@ uv run main.py --tool-tier complete  # ○ All available tools
 ```bash
 docker build -t workspace-mcp .
 docker run -p 8000:8000 -v $(pwd):/app \
+  -e MCP_ENABLE_OAUTH21=true \
+  -e GOOGLE_OAUTH_CLIENT_ID="..." \
   workspace-mcp --transport streamable-http
 
 # With tool selection via environment variables
@@ -1019,7 +1025,7 @@ uv run pytest
 ```
 
 - `uv sync --group test` installs only the testing stack if you need a slimmer environment.
-- `uv run main.py --transport streamable-http` launches the server with your checked-out code for manual verification.
+- `MCP_ENABLE_OAUTH21=true GOOGLE_OAUTH_CLIENT_ID=... uv run main.py --transport streamable-http` launches the HTTP server with your checked-out code for manual verification.
 - Ruff is part of the `dev` group because pre-push hooks call `ruff check` automatically—run it locally before committing to avoid hook failures.
 
 </details>
@@ -1053,7 +1059,9 @@ export MCP_ENABLE_OAUTH21=true
 uv run main.py --transport streamable-http
 ```
 
-If `MCP_ENABLE_OAUTH21` is not set to `true`, the server will use legacy authentication, which is suitable for clients that do not support OAuth 2.1.
+If `MCP_ENABLE_OAUTH21` is not set to `true`, the server uses legacy authentication. In `streamable-http` mode, legacy authentication binds to `127.0.0.1` by default to keep cached Google credentials local. Set `WORKSPACE_MCP_HOST` explicitly only for trusted networks; use OAuth 2.1 for remote or shared HTTP deployments.
+
+Streamable HTTP requests with an `Origin` header are checked against loopback origins, `WORKSPACE_EXTERNAL_URL`, and `OAUTH_ALLOWED_ORIGINS` to reduce DNS-rebinding risk. Non-browser MCP clients that omit `Origin` are unaffected.
 
 <details open>
 <summary>🔐 <b>How the FastMCP GoogleProvider handles OAuth</b> <sub><sup>← Advanced OAuth 2.1 details</sup></sub></summary>
@@ -1076,6 +1084,7 @@ The server supports a stateless mode designed for containerized environments whe
 ```bash
 # Stateless mode requires OAuth 2.1 to be enabled
 export MCP_ENABLE_OAUTH21=true
+export GOOGLE_OAUTH_CLIENT_ID="..."
 export WORKSPACE_MCP_STATELESS_MODE=true
 uv run main.py --transport streamable-http
 ```
@@ -1161,6 +1170,7 @@ The server supports an external OAuth 2.1 provider mode for scenarios where auth
 ```bash
 # External OAuth provider mode requires OAuth 2.1 to be enabled
 export MCP_ENABLE_OAUTH21=true
+export GOOGLE_OAUTH_CLIENT_ID="..."
 export EXTERNAL_OAUTH21_PROVIDER=true
 uv run main.py --transport streamable-http
 ```
@@ -1253,7 +1263,7 @@ uv run main.py
 }
 ```
 
-*Note: Make sure to start the server with `--transport streamable-http` when using VS Code MCP.*
+*Note: Make sure to start the server with `--transport streamable-http` when using VS Code MCP. For remote or shared HTTP endpoints, also enable OAuth 2.1 with `MCP_ENABLE_OAUTH21=true` and `GOOGLE_OAUTH_CLIENT_ID`.*
 </details>
 
 ### Claude Code MCP Client Support
@@ -1265,6 +1275,8 @@ uv run main.py
 
 ```bash
 # Start the server in HTTP mode first
+export MCP_ENABLE_OAUTH21=true
+export GOOGLE_OAUTH_CLIENT_ID="..."
 uv run main.py --transport streamable-http
 
 # Then add to Claude Code
@@ -1321,6 +1333,8 @@ uvx workspace-mcp --tool-tier extended  # Core + additional features
 uvx workspace-mcp --tool-tier complete  # All tools
 
 # Start in HTTP mode for debugging
+export MCP_ENABLE_OAUTH21=true
+export GOOGLE_OAUTH_CLIENT_ID="..."
 uvx workspace-mcp --transport streamable-http
 ```
 </details>
@@ -1378,7 +1392,7 @@ If you need to use HTTP mode with Claude Desktop:
 }
 ```
 
-*Note: Make sure to start the server with `--transport streamable-http` when using HTTP mode.*
+*Note: Make sure to start the server with `--transport streamable-http` when using HTTP mode. For remote or shared HTTP endpoints, also enable OAuth 2.1 with `MCP_ENABLE_OAUTH21=true` and `GOOGLE_OAUTH_CLIENT_ID`.*
 
 ### First-Time Authentication
 

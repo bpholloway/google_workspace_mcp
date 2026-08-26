@@ -82,12 +82,119 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 reload_oauth_config()
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+# WORKSPACE_MCP_LOG_LEVEL=DEBUG surfaces the debug-level companion lines that
+# carry user text (search queries, find/replace strings) which INFO deliberately
+# omits — see tests/test_log_hygiene.py. Default stays INFO. Allowlisted, not
+# getattr'd: getattr(logging, <arbitrary env value>) can resolve to a non-level
+# attribute (e.g. BASIC_FORMAT) and crash basicConfig at startup.
+_LOG_LEVEL_NAMES = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
+_log_level_name = os.environ.get("WORKSPACE_MCP_LOG_LEVEL", "INFO").upper()
+_log_level = (
+    getattr(logging, _log_level_name)
+    if _log_level_name in _LOG_LEVEL_NAMES
+    else logging.INFO
 )
+logging.basicConfig(
+    level=_log_level,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+# Imports above may already have installed a root handler, which makes
+# basicConfig a no-op. Set the level explicitly so the environment override
+# works regardless of import order without replacing embedding-app handlers.
+logging.getLogger().setLevel(_log_level)
 logger = logging.getLogger(__name__)
 
 configure_file_logging()
+
+
+def resolve_stdio_callback_port() -> None:
+    """
+    Late-bind the legacy stdio OAuth callback port.
+
+    Streamable HTTP/OAuth 2.1 owns its main HTTP port directly and must keep the
+    normal PORT/WORKSPACE_MCP_PORT semantics. The fallback range only exists for
+    the standalone stdio callback listener.
+    """
+    from auth.port_resolver import resolve_port, NoAvailablePortError, PortConfigError
+
+    try:
+        resolve_port()
+    except (NoAvailablePortError, PortConfigError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    reload_oauth_config()
+
+
+def resolve_callback_port_for_transport(transport: str) -> None:
+    """Apply callback port fallback only to legacy stdio transport."""
+    if transport == "stdio":
+        resolve_stdio_callback_port()
+    else:
+        os.environ.pop("WORKSPACE_MCP_RESOLVED_PORT", None)
+
+
+def resolve_bind_host_for_transport(transport: str) -> str:
+    """Choose a safe default bind host for the selected transport/auth mode."""
+    configured_host = os.getenv("WORKSPACE_MCP_HOST")
+    host = configured_host or "0.0.0.0"
+    if transport != "streamable-http":
+        return host
+
+    config = get_oauth_config()
+    if config.is_oauth21_enabled():
+        return host
+
+    if configured_host:
+        if configured_host not in {"localhost", "127.0.0.1", "::1"}:
+            logger.warning(
+                "Legacy streamable-http mode has no MCP-level auth provider and is "
+                "bound to %s because WORKSPACE_MCP_HOST was explicitly set. "
+                "Use MCP_ENABLE_OAUTH21=true for remotely reachable HTTP deployments.",
+                configured_host,
+            )
+        return configured_host
+
+    logger.warning(
+        "Legacy streamable-http mode has no MCP-level auth provider; binding to "
+        "127.0.0.1 by default. Set WORKSPACE_MCP_HOST explicitly only for trusted "
+        "networks, or use MCP_ENABLE_OAUTH21=true for remote HTTP deployments."
+    )
+    return "127.0.0.1"
+
+
+def validate_streamable_http_auth(transport: str) -> None:
+    """Reject misconfigured OAuth 2.1 HTTP before starting."""
+    if transport != "streamable-http":
+        return
+
+    config = get_oauth_config()
+    if config.is_oauth21_enabled() and not config.is_configured():
+        print(
+            "Error: streamable-http transport with MCP_ENABLE_OAUTH21=true requires "
+            "GOOGLE_OAUTH_CLIENT_ID so OAuth 2.1 protocol authentication can be "
+            "configured.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+# Single source of truth: service name -> module path.
+# VALID_SERVICES is derived from this mapping.
+SERVICE_MODULES = {
+    "gmail": "gmail.gmail_tools",
+    "drive": "gdrive.drive_tools",
+    "calendar": "gcalendar.calendar_tools",
+    "docs": "gdocs.docs_tools",
+    "sheets": "gsheets.sheets_tools",
+    "chat": "gchat.chat_tools",
+    "forms": "gforms.forms_tools",
+    "slides": "gslides.slides_tools",
+    "tasks": "gtasks.tasks_tools",
+    "contacts": "gcontacts.contacts_tools",
+    "search": "gsearch.search_tools",
+    "appscript": "gappsscript.apps_script_tools",
+}
+VALID_SERVICES = frozenset(SERVICE_MODULES)
 
 
 def safe_print(text):
@@ -263,10 +370,13 @@ def main():
         )
         sys.exit(1)
 
+    validate_streamable_http_auth(args.transport)
+    resolve_callback_port_for_transport(args.transport)
+
     # Set port and base URI once for reuse throughout the function
     port = int(os.getenv("PORT", os.getenv("WORKSPACE_MCP_PORT", 8000)))
     base_uri = os.getenv("WORKSPACE_MCP_BASE_URI", "http://localhost")
-    host = os.getenv("WORKSPACE_MCP_HOST", "0.0.0.0")
+    host = resolve_bind_host_for_transport(args.transport)
     external_url = os.getenv("WORKSPACE_EXTERNAL_URL")
     display_url = external_url if external_url else f"{base_uri}:{port}"
 

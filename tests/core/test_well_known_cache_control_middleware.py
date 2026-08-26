@@ -1,4 +1,5 @@
 import importlib
+from types import SimpleNamespace
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -49,6 +50,63 @@ def test_well_known_cache_control_middleware_rewrites_headers():
     assert extra.status_code == 200
     assert extra.headers["cache-control"] == "public, max-age=3600"
     assert "etag" not in extra.headers
+
+
+def test_origin_validation_rejects_untrusted_browser_origin(monkeypatch):
+    from core.server import OriginValidationMiddleware
+
+    monkeypatch.setattr(
+        "auth.oauth_config.get_oauth_config",
+        lambda: SimpleNamespace(
+            get_allowed_origins=lambda: ["http://localhost:8000"],
+            external_url=None,
+        ),
+    )
+
+    async def endpoint(request):
+        return Response("ok")
+
+    app = Starlette(
+        routes=[Route("/health", endpoint)],
+        middleware=[Middleware(OriginValidationMiddleware)],
+    )
+    client = TestClient(app)
+
+    assert (
+        client.get("/health", headers={"Origin": "http://evil.test"}).status_code
+        == 403
+    )
+    assert (
+        client.get("/health", headers={"Origin": "http://localhost:5173"}).status_code
+        == 200
+    )
+    assert client.get("/health").status_code == 200
+
+
+def test_origin_validation_allows_configured_external_origin(monkeypatch):
+    from core.server import OriginValidationMiddleware
+
+    monkeypatch.setattr(
+        "auth.oauth_config.get_oauth_config",
+        lambda: SimpleNamespace(
+            get_allowed_origins=lambda: ["http://localhost:8000"],
+            external_url="https://workspace.example.com/mcp",
+        ),
+    )
+
+    async def endpoint(request):
+        return Response("ok")
+
+    app = Starlette(
+        routes=[Route("/health", endpoint)],
+        middleware=[Middleware(OriginValidationMiddleware)],
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/health", headers={"Origin": "https://workspace.example.com"}
+    )
+    assert response.status_code == 200
 
 
 def test_configured_server_applies_no_cache_to_served_oauth_discovery_routes(
