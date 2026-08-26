@@ -27,6 +27,8 @@ client_secret.json
 
 # ---- Logs --------------------------------------------------------------
 mcp_server_debug.log
+mcp-stderr-*.log
+mcp-stdout-*.log
 
 # ---- Local development files -------------------------------------------
 /.credentials
