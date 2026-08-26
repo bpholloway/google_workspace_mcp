@@ -75,6 +75,8 @@ sheets:
     - modify_sheet_values
     - resize_sheet_dimensions
     - create_sheet
+    - rename_sheet
+    - delete_sheet
     - get_spreadsheet_info
     - list_spreadsheets
     - format_sheet_range

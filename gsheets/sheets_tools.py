@@ -1228,6 +1228,127 @@ async def create_sheet(
     return text_output
 
 
+@server.tool()
+@handle_http_errors("rename_sheet", service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def rename_sheet(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    sheet_name: str,
+    new_name: str,
+) -> str:
+    """
+    Renames a sheet within an existing spreadsheet.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        sheet_name (str): The current name of the sheet to rename. Required.
+        new_name (str): The new name for the sheet. Required.
+
+    Returns:
+        str: Confirmation message of the successful sheet rename.
+    """
+    logger.info(
+        f"[rename_sheet] Invoked. Email: '{user_google_email}', "
+        f"Spreadsheet: {spreadsheet_id}, sheet_name_len={len(sheet_name) if sheet_name else 0}, "
+        f"new_name_len={len(new_name) if new_name else 0}"
+    )
+
+    metadata = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,title))")
+        .execute
+    )
+    sheets = metadata.get("sheets", [])
+    target_sheet = _select_sheet(sheets, sheet_name)
+    sheet_id = target_sheet["properties"]["sheetId"]
+
+    request_body = {
+        "requests": [
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": sheet_id, "title": new_name},
+                    "fields": "title",
+                }
+            }
+        ]
+    }
+
+    await asyncio.to_thread(
+        service.spreadsheets()
+        .batchUpdate(spreadsheetId=spreadsheet_id, body=request_body)
+        .execute
+    )
+
+    text_output = (
+        f"Successfully renamed sheet '{sheet_name}' to '{new_name}' "
+        f"(ID: {sheet_id}) in spreadsheet {spreadsheet_id} for {user_google_email}."
+    )
+
+    logger.info(
+        f"Successfully renamed sheet for {user_google_email}. Sheet ID: {sheet_id}"
+    )
+    return text_output
+
+
+@server.tool()
+@handle_http_errors("delete_sheet", service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def delete_sheet(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    sheet_name: str,
+) -> str:
+    """
+    Deletes a sheet from an existing spreadsheet.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        sheet_name (str): The name of the sheet to delete. Required.
+
+    Returns:
+        str: Confirmation message of the successful sheet deletion.
+    """
+    logger.info(
+        f"[delete_sheet] Invoked. Email: '{user_google_email}', "
+        f"Spreadsheet: {spreadsheet_id}, sheet_name_len={len(sheet_name) if sheet_name else 0}"
+    )
+
+    metadata = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,title))")
+        .execute
+    )
+    sheets = metadata.get("sheets", [])
+    if len(sheets) <= 1:
+        raise UserInputError("Cannot delete the only sheet in a spreadsheet.")
+
+    target_sheet = _select_sheet(sheets, sheet_name)
+    sheet_id = target_sheet["properties"]["sheetId"]
+
+    request_body = {"requests": [{"deleteSheet": {"sheetId": sheet_id}}]}
+
+    await asyncio.to_thread(
+        service.spreadsheets()
+        .batchUpdate(spreadsheetId=spreadsheet_id, body=request_body)
+        .execute
+    )
+
+    text_output = (
+        f"Successfully deleted sheet '{sheet_name}' (ID: {sheet_id}) "
+        f"in spreadsheet {spreadsheet_id} for {user_google_email}."
+    )
+
+    logger.info(
+        f"Successfully deleted sheet for {user_google_email}. Sheet ID: {sheet_id}"
+    )
+    return text_output
+
+
 def _to_extended_value(val) -> dict:
     """Convert a Python value to a Sheets API ExtendedValue dict."""
     if isinstance(val, bool):
