@@ -67,6 +67,9 @@ docs:
     - create_table_with_data
     - update_table_cell
     - debug_table_structure
+    - insert_doc_tab
+    - delete_doc_tab
+    - update_doc_tab
   extended: []
   complete: []
 sheets:
