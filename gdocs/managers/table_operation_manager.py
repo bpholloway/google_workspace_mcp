@@ -77,28 +77,6 @@ class TableOperationManager:
             # Step 2: Get fresh document structure to find actual cell positions
             fresh_tables = await self._get_document_tables(document_id, tab_id)
             if not fresh_tables:
-                # TODO(BL-79 follow-up, 2026-08-26): false-negative on partial
-                # success. Confirmed live: step 1 above actually creates the
-                # table (batchUpdate succeeds), but this re-fetch then comes
-                # back with fresh_tables empty, so the tool reports
-                # "ERROR: Could not find table after creation" even though an
-                # empty, unpopulated table is now sitting in the document.
-                # A caller trusting the error and retrying ends up creating a
-                # second empty table -- duplicate tables accumulate silently.
-                #
-                # Suspected cause (not yet traced end-to-end): _get_document_tables
-                # re-fetches with includeTabsContent=True and only reads from
-                # the tabs[] structure when an explicit tab_id is passed (see
-                # below); when tab_id is None it falls through to doc.get("body",
-                # {}), which may be empty on documents where the API nests
-                # content under tabs[0].documentTab.body even for a single,
-                # untitled default tab. Needs a repro doc + direct comparison
-                # of the raw documents().get() response shape with and without
-                # includeTabsContent to confirm before fixing.
-                #
-                # Workaround in the meantime: call update_table_cell manually
-                # per cell after create_table_with_data errors this way --
-                # the table exists even though the tool reported failure.
                 return False, "Could not find table after creation", {}
 
             # Step 3: Find the newly created table by insertion index
@@ -170,6 +148,17 @@ class TableOperationManager:
             if tab and "documentTab" in tab:
                 doc = doc.copy()
                 doc["body"] = tab["documentTab"].get("body", {})
+        elif doc.get("tabs"):
+            # BL-79: with includeTabsContent=True the API nests content under
+            # tabs[].documentTab.body -- including for the single default tab
+            # of an untabbed document -- and leaves the top-level body empty.
+            # Without this fallback, find_tables(doc) always saw an empty
+            # body when no explicit tab_id was given, so a table created one
+            # call earlier could never be found again.
+            first_tab = self._first_document_tab(doc.get("tabs", []))
+            if first_tab:
+                doc = doc.copy()
+                doc["body"] = first_tab.get("body", {})
 
         return find_tables(doc)
 
@@ -183,6 +172,17 @@ class TableOperationManager:
                 found = TableOperationManager._find_tab(tab["childTabs"], target_id)
                 if found:
                     return found
+        return None
+
+    @staticmethod
+    def _first_document_tab(tabs: list) -> Optional[Dict[str, Any]]:
+        """Recursively find the first tab's documentTab content."""
+        for tab in tabs:
+            if "documentTab" in tab:
+                return tab["documentTab"]
+            child = TableOperationManager._first_document_tab(tab.get("childTabs", []))
+            if child:
+                return child
         return None
 
     @staticmethod
