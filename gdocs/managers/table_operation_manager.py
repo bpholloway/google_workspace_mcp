@@ -77,6 +77,28 @@ class TableOperationManager:
             # Step 2: Get fresh document structure to find actual cell positions
             fresh_tables = await self._get_document_tables(document_id, tab_id)
             if not fresh_tables:
+                # TODO(BL-79 follow-up, 2026-08-26): false-negative on partial
+                # success. Confirmed live: step 1 above actually creates the
+                # table (batchUpdate succeeds), but this re-fetch then comes
+                # back with fresh_tables empty, so the tool reports
+                # "ERROR: Could not find table after creation" even though an
+                # empty, unpopulated table is now sitting in the document.
+                # A caller trusting the error and retrying ends up creating a
+                # second empty table -- duplicate tables accumulate silently.
+                #
+                # Suspected cause (not yet traced end-to-end): _get_document_tables
+                # re-fetches with includeTabsContent=True and only reads from
+                # the tabs[] structure when an explicit tab_id is passed (see
+                # below); when tab_id is None it falls through to doc.get("body",
+                # {}), which may be empty on documents where the API nests
+                # content under tabs[0].documentTab.body even for a single,
+                # untitled default tab. Needs a repro doc + direct comparison
+                # of the raw documents().get() response shape with and without
+                # includeTabsContent to confirm before fixing.
+                #
+                # Workaround in the meantime: call update_table_cell manually
+                # per cell after create_table_with_data errors this way --
+                # the table exists even though the tool reported failure.
                 return False, "Could not find table after creation", {}
 
             # Step 3: Find the newly created table by insertion index
