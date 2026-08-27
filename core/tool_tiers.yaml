@@ -65,6 +65,7 @@ docs:
     - insert_doc_image
     - update_doc_headers_footers
     - create_table_with_data
+    - update_table_cell
     - debug_table_structure
   extended: []
   complete: []

@@ -42,6 +42,7 @@ from gdocs.docs_structure import (
     parse_document_structure,
     find_tables,
     analyze_document_complexity,
+    get_table_cell_indices,
 )
 from gdocs.docs_tables import extract_table_as_data
 from gdocs.docs_markdown import (
@@ -1706,6 +1707,101 @@ async def create_table_with_data(
         )
     else:
         return f"ERROR: {message}"
+
+
+@server.tool()
+@handle_http_errors("update_table_cell", service_type="docs")
+@require_google_service("docs", "docs_write")
+async def update_table_cell(
+    service: Any,
+    user_google_email: str,
+    document_id: str,
+    table_index: int,
+    row: int,
+    column: int,
+    new_text: str,
+    tab_id: Optional[str] = None,
+) -> str:
+    """
+    Sets the text content of a specific cell in an existing table, replacing
+    whatever is there (if anything).
+
+    Use inspect_doc_structure first to find table_index (table_details[].index)
+    for documents with multiple tables.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        document_id (str): The ID of the document. Required.
+        table_index (int): 0-based index of the table in document order. Required.
+        row (int): 0-based row index within the table. Required.
+        column (int): 0-based column index within the table. Required.
+        new_text (str): The text to write into the cell. Required.
+        tab_id (Optional[str]): ID of the tab containing the table, for
+            multi-tab documents. Defaults to the main document body.
+
+    Returns:
+        str: Confirmation message of the successful cell update.
+    """
+    logger.info(
+        f"[update_table_cell] Invoked. Email: '{user_google_email}', "
+        f"Document: {document_id}, table_index={table_index}, row={row}, "
+        f"column={column}, new_text_len={len(new_text) if new_text else 0}"
+    )
+
+    doc_data = await asyncio.to_thread(
+        service.documents().get(documentId=document_id).execute
+    )
+
+    tables = find_tables(doc_data)
+    if table_index < 0 or table_index >= len(tables):
+        raise UserInputError(
+            f"table_index {table_index} not found. Document has {len(tables)} "
+            f"table(s) (valid indices: 0-{len(tables) - 1})."
+            if tables
+            else f"table_index {table_index} not found. Document has no tables."
+        )
+
+    table = tables[table_index]
+    if row < 0 or row >= table["rows"] or column < 0 or column >= table["columns"]:
+        raise UserInputError(
+            f"Cell ({row}, {column}) is out of range for table {table_index}, "
+            f"which is {table['rows']}x{table['columns']} "
+            f"(valid rows: 0-{table['rows'] - 1}, valid columns: 0-{table['columns'] - 1})."
+        )
+
+    cell_indices = get_table_cell_indices(doc_data, table_index)
+    start_index, end_index = cell_indices[row][column]
+
+    if end_index - start_index <= 1:
+        # Empty cell (just the paragraph's implicit trailing newline) -- insert only.
+        requests = [create_insert_text_request(start_index, new_text, tab_id)]
+    else:
+        # Cell has existing content. The Docs API rejects deleting a paragraph's
+        # own terminating newline (verified empirically: deleting the full
+        # [start_index, end_index) range 400s with "Cannot delete the requested
+        # range"), so the delete stops one short of end_index, leaving that
+        # newline in place, then the new text is inserted before it.
+        requests = [
+            create_delete_range_request(start_index, end_index - 1, tab_id),
+            create_insert_text_request(start_index, new_text, tab_id),
+        ]
+
+    await asyncio.to_thread(
+        service.documents()
+        .batchUpdate(documentId=document_id, body={"requests": requests})
+        .execute
+    )
+
+    text_output = (
+        f"Successfully updated cell ({row}, {column}) in table {table_index} "
+        f"of document {document_id} for {user_google_email}."
+    )
+
+    logger.info(
+        f"Successfully updated table cell for {user_google_email}. "
+        f"Document: {document_id}, table_index={table_index}, cell=({row},{column})"
+    )
+    return text_output
 
 
 @server.tool()
