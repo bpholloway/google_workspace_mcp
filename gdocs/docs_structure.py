@@ -252,29 +252,14 @@ def get_table_cell_indices(
     for row in table["cells"]:
         row_indices = []
         for cell in row:
-            # Each cell contains at least one paragraph
-            # Find the first paragraph in the cell for content insertion
-            cell_content = cell.get("content_elements", [])
-            if cell_content:
-                # Look for the first paragraph in cell content
-                first_para = None
-                for element in cell_content:
-                    if "paragraph" in element:
-                        first_para = element["paragraph"]
-                        break
-
-                if first_para and "elements" in first_para and first_para["elements"]:
-                    # Insert at the start of the first text run in the paragraph
-                    first_text_element = first_para["elements"][0]
-                    if "textRun" in first_text_element:
-                        start_idx = first_text_element.get(
-                            "startIndex", cell["start_index"] + 1
-                        )
-                        end_idx = first_text_element.get("endIndex", start_idx + 1)
-                        row_indices.append((start_idx, end_idx))
-                        continue
-
-            # Fallback: use cell boundaries with safe margins
+            # Use the cell's own structural boundaries, not the first text
+            # run's indices. Google's API guarantees cell/paragraph ranges
+            # tile without gaps, so cell end_index - 1 always lands exactly
+            # on the last paragraph's terminating newline -- regardless of
+            # how many text runs make up the cell's content, and regardless
+            # of whether that last run's own endIndex happens to include the
+            # newline (this varies by how the content was written/edited and
+            # isn't a reliable signal on its own).
             content_start = cell["start_index"] + 1
             content_end = cell["end_index"] - 1
             row_indices.append((content_start, content_end))

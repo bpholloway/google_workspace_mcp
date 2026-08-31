@@ -1,11 +1,24 @@
 """
 Unit tests for Google Docs update_table_cell tool.
 
-The mock document fixture mirrors the real Docs API response shape confirmed
-live (BL-XX off-by-one bug report, 36/36 reproduction): a cell's text-run
-endIndex covers only the visible text and excludes the paragraph's trailing
-newline, which occupies the index just past it. An empty cell's paragraph is
-exactly one character wide (just the implicit trailing newline).
+get_table_cell_indices derives a cell's editable text range purely from the
+cell's own structural start_index/end_index (Google's API guarantees these
+tile without gaps, so end_index - 1 always lands on the last paragraph's
+terminating newline). It deliberately does NOT inspect the cell's internal
+paragraph/textRun structure, because that structure isn't a reliable signal:
+
+- BL-XX (36/36 repro): a live, previously-edited cell's first textRun ended
+  right at the visible text, one short of the cell's real end -- reading
+  indices off that run stranded the old text's last character.
+- A follow-up live test on a table freshly built by create_table_with_data
+  found the opposite shape: a single run spanning the text *and* the
+  trailing newline -- reading indices off that run tried to delete the
+  newline itself, and the Docs API rejected the whole request.
+
+Cell-boundary math sidesteps both shapes. The mock cells below deliberately
+vary their internal paragraph/run structure (single run, run split
+mid-content, run including the newline) to prove the code path used is
+insensitive to all of them.
 """
 
 import os
@@ -29,14 +42,43 @@ def _unwrap(tool):
 
 
 def _cell(start_index, end_index, text):
-    """Build a table cell matching the real Docs API shape.
+    """Build a table cell whose sole textRun spans the *entire* paragraph,
+    i.e. its own endIndex happens to include the trailing newline -- the
+    shape a freshly-inserted cell tends to have. ``text`` should include the
+    trailing "\\n", e.g. "\\n" for an empty cell, "Hi\\n" for a cell
+    containing "Hi".
 
-    ``text`` should include the trailing "\\n" the API always appends to a
-    cell's sole paragraph -- e.g. "\\n" for an empty cell, "Hi\\n" for a cell
-    containing "Hi". The paragraph spans (start_index+1, end_index), but the
-    textRun element within it ends one short of that (end_index - 1): the
-    textRun's own endIndex covers only the visible text, excluding the
-    paragraph's trailing newline which occupies the last slot.
+    update_table_cell must get the same correct answer regardless of this
+    internal shape, since it deliberately ignores it -- see
+    _cell_run_excludes_newline for the other shape observed live.
+    """
+    return {
+        "startIndex": start_index,
+        "endIndex": end_index,
+        "content": [
+            {
+                "startIndex": start_index + 1,
+                "endIndex": end_index,
+                "paragraph": {
+                    "elements": [
+                        {
+                            "startIndex": start_index + 1,
+                            "endIndex": end_index,
+                            "textRun": {"content": text, "textStyle": {}},
+                        }
+                    ],
+                    "paragraphStyle": {},
+                },
+            }
+        ],
+    }
+
+
+def _cell_run_excludes_newline(start_index, end_index, text):
+    """Build a table cell whose textRun ends one short of the cell's real
+    end -- the shape observed live in the BL-XX bug report, where reading
+    indices off the run (instead of the cell) stranded the last character.
+    ``text`` is the visible text, without a trailing newline.
     """
     return {
         "startIndex": start_index,
@@ -50,7 +92,7 @@ def _cell(start_index, end_index, text):
                         {
                             "startIndex": start_index + 1,
                             "endIndex": end_index - 1,
-                            "textRun": {"content": text[:-1], "textStyle": {}},
+                            "textRun": {"content": text, "textStyle": {}},
                         }
                     ],
                     "paragraphStyle": {},
@@ -138,10 +180,46 @@ async def test_update_table_cell_overwrite_existing():
     assert len(requests) == 2
 
     delete_req = requests[0]["deleteContentRange"]["range"]
-    # Cell (0,1) contains "Hi" spanning indices (5, 7); that's already the
-    # exclusive end of the visible text (index 7 is the paragraph's trailing
-    # newline, one past the textRun), so the delete covers the full (5, 7)
-    # range -- deleting only (5, 6) would strand the "i" (BL-XX bug).
+    # Cell (0,1) spans structural indices (4, 8); content_start/content_end
+    # are derived purely from that cell boundary (5, 7), never from the
+    # textRun's own endIndex -- deleting only (5, 6) would strand the "i"
+    # (BL-XX bug), while deleting through index 7 would try to remove the
+    # paragraph's trailing newline and get rejected by the Docs API.
+    assert delete_req["startIndex"] == 5
+    assert delete_req["endIndex"] == 7
+
+    insert_req = requests[1]["insertText"]
+    assert insert_req["location"]["index"] == 5
+    assert insert_req["text"] == "New"
+
+
+@pytest.mark.asyncio
+async def test_update_table_cell_overwrite_when_run_excludes_newline():
+    """Same cell boundaries as the "Hi" cell above, but with the textRun
+    shaped the way BL-XX's live document actually had it (run ends one
+    short of the cell's end). update_table_cell must compute the identical
+    delete/insert range either way, since it never reads the run's indices.
+    """
+    doc_data = _make_doc()
+    doc_data["body"]["content"][0]["table"]["tableRows"][0]["tableCells"][1] = (
+        _cell_run_excludes_newline(4, 8, "Hi")
+    )
+    mock_service = _create_mock_service(doc_data)
+
+    result = await _unwrap(update_table_cell)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        document_id="doc_123",
+        table_index=0,
+        row=0,
+        column=1,
+        new_text="New",
+    )
+
+    assert "Successfully updated cell (0, 1)" in result
+
+    requests = mock_service.documents().batchUpdate.call_args[1]["body"]["requests"]
+    delete_req = requests[0]["deleteContentRange"]["range"]
     assert delete_req["startIndex"] == 5
     assert delete_req["endIndex"] == 7
 
