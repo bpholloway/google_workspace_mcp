@@ -1776,13 +1776,12 @@ async def update_table_cell(
         # Empty cell (just the paragraph's implicit trailing newline) -- insert only.
         requests = [create_insert_text_request(start_index, new_text, tab_id)]
     else:
-        # Cell has existing content. The Docs API rejects deleting a paragraph's
-        # own terminating newline (verified empirically: deleting the full
-        # [start_index, end_index) range 400s with "Cannot delete the requested
-        # range"), so the delete stops one short of end_index, leaving that
-        # newline in place, then the new text is inserted before it.
+        # Cell has existing content. end_index is already the exclusive end of
+        # the cell's actual text (the paragraph's terminating newline sits at
+        # end_index, not before it), so deleting the full [start_index,
+        # end_index) range removes exactly the old text and nothing more.
         requests = [
-            create_delete_range_request(start_index, end_index - 1, tab_id),
+            create_delete_range_request(start_index, end_index, tab_id),
             create_insert_text_request(start_index, new_text, tab_id),
         ]
 

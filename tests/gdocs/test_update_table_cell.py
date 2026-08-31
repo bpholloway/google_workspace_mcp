@@ -1,11 +1,11 @@
 """
 Unit tests for Google Docs update_table_cell tool.
 
-The mock document fixture mirrors the real Docs API response shape verified
-live against a throwaway test document (see the deploy notes for
-commit history): each table cell's content paragraph carries its own
-startIndex/endIndex on the textRun, and an empty cell's paragraph is exactly
-one character wide (just the implicit trailing newline).
+The mock document fixture mirrors the real Docs API response shape confirmed
+live (BL-XX off-by-one bug report, 36/36 reproduction): a cell's text-run
+endIndex covers only the visible text and excludes the paragraph's trailing
+newline, which occupies the index just past it. An empty cell's paragraph is
+exactly one character wide (just the implicit trailing newline).
 """
 
 import os
@@ -33,8 +33,10 @@ def _cell(start_index, end_index, text):
 
     ``text`` should include the trailing "\\n" the API always appends to a
     cell's sole paragraph -- e.g. "\\n" for an empty cell, "Hi\\n" for a cell
-    containing "Hi". The paragraph/textRun span is (start_index+1, end_index),
-    matching the offset-by-one observed in the live verification.
+    containing "Hi". The paragraph spans (start_index+1, end_index), but the
+    textRun element within it ends one short of that (end_index - 1): the
+    textRun's own endIndex covers only the visible text, excluding the
+    paragraph's trailing newline which occupies the last slot.
     """
     return {
         "startIndex": start_index,
@@ -47,8 +49,8 @@ def _cell(start_index, end_index, text):
                     "elements": [
                         {
                             "startIndex": start_index + 1,
-                            "endIndex": end_index,
-                            "textRun": {"content": text, "textStyle": {}},
+                            "endIndex": end_index - 1,
+                            "textRun": {"content": text[:-1], "textStyle": {}},
                         }
                     ],
                     "paragraphStyle": {},
@@ -136,9 +138,10 @@ async def test_update_table_cell_overwrite_existing():
     assert len(requests) == 2
 
     delete_req = requests[0]["deleteContentRange"]["range"]
-    # Cell (0,1) content spans (5, 8); the delete must stop one short of the
-    # paragraph's own end (the trailing newline can't be deleted -- verified
-    # live: deleting the full range 400s with "Cannot delete the requested range").
+    # Cell (0,1) contains "Hi" spanning indices (5, 7); that's already the
+    # exclusive end of the visible text (index 7 is the paragraph's trailing
+    # newline, one past the textRun), so the delete covers the full (5, 7)
+    # range -- deleting only (5, 6) would strand the "i" (BL-XX bug).
     assert delete_req["startIndex"] == 5
     assert delete_req["endIndex"] == 7
 
