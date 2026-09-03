@@ -1753,65 +1753,101 @@ async def delete_sheet_table(
     service,
     user_google_email: str,
     spreadsheet_id: str,
-    table_id: str,
+    table_id: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    range_name: Optional[str] = None,
 ) -> str:
     """
     Deletes a structured table from a Google Sheet, including the alternating
     -colors banded range addTable auto-creates for it (deleteTable alone
     leaves that banding orphaned, which then blocks future addTable calls on
-    the same sheet with "You cannot add alternating background colors to a
-    range that already has alternating background colors"). Cell values in
+    overlapping ranges with "You cannot add alternating background colors to
+    a range that already has alternating background colors"). Cell values in
     the table's former range are left untouched; use modify_sheet_values with
     clear_values=True to clear them separately.
 
-    Use list_sheet_tables first to find the table ID.
+    Pass table_id (get it from list_sheet_tables) for the normal case. If a
+    table was already removed some other way but its banded range was left
+    orphaned, pass sheet_name and range_name instead to clean up just the
+    banding at that range.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
         spreadsheet_id (str): The ID of the spreadsheet. Required.
-        table_id (str): The ID of the table to delete (get from list_sheet_tables). Required.
+        table_id (Optional[str]): The ID of the table to delete. Required
+            unless sheet_name and range_name are both given instead.
+        sheet_name (Optional[str]): Sheet to clean up an orphaned banded
+            range on. Used only when table_id is omitted.
+        range_name (Optional[str]): A1-style range (e.g. "A20:M20") of the
+            orphaned banded range to remove. Used only when table_id is omitted.
 
     Returns:
-        str: Confirmation message of the successful table deletion.
+        str: Confirmation message of what was deleted.
     """
     logger.info(
         f"[delete_sheet_table] Invoked. Email: '{user_google_email}', "
-        f"Spreadsheet: {spreadsheet_id}, Table: {table_id}"
+        f"Spreadsheet: {spreadsheet_id}, Table: {table_id}, "
+        f"sheet_name: {sheet_name}, range_name: {range_name}"
     )
+
+    if not table_id and not (sheet_name and range_name):
+        raise UserInputError(
+            "Provide table_id, or both sheet_name and range_name to clean up "
+            "an orphaned banded range that has no live table."
+        )
 
     spreadsheet = await asyncio.to_thread(
         service.spreadsheets()
         .get(
             spreadsheetId=spreadsheet_id,
-            fields="sheets(properties(sheetId),tables(tableId,range),bandedRanges)",
+            fields="sheets(properties(sheetId,title),tables(tableId,range),bandedRanges)",
         )
         .execute
     )
+    sheets = spreadsheet.get("sheets", [])
 
-    table_range = None
-    banded_range_ids = []
-    for sheet in spreadsheet.get("sheets", []):
-        sheet_tables = sheet.get("tables", [])
-        if not any(t.get("tableId") == table_id for t in sheet_tables):
-            continue
-        table_range = next(
-            t["range"] for t in sheet_tables if t.get("tableId") == table_id
-        )
-        # addTable auto-creates a banded (alternating colors) range matching
-        # the table's range; deleteTable does not clean it up on its own.
-        for banded in sheet.get("bandedRanges", []):
-            if banded.get("range") == table_range and "bandedRangeId" in banded:
-                banded_range_ids.append(banded["bandedRangeId"])
-        break
+    # addTable auto-creates a banded (alternating colors) range matching the
+    # table's range; deleteTable does not clean it up on its own.
+    if table_id:
+        target_range = None
+        banded_ranges = []
+        for sheet in sheets:
+            match = next(
+                (t for t in sheet.get("tables", []) if t.get("tableId") == table_id),
+                None,
+            )
+            if match:
+                target_range = match["range"]
+                banded_ranges = sheet.get("bandedRanges", [])
+                break
+        if target_range is None:
+            raise UserInputError(
+                f"Table '{table_id}' not found in spreadsheet {spreadsheet_id}. "
+                f"Use list_sheet_tables to find valid table IDs."
+            )
+    else:
+        target_sheet = _select_sheet(sheets, sheet_name)
+        target_range = _parse_a1_range(range_name, sheets)
+        # _parse_a1_range falls back to the first sheet for an unqualified
+        # range — pin it to the sheet we were actually asked to clean up.
+        target_range["sheetId"] = target_sheet["properties"]["sheetId"]
+        banded_ranges = target_sheet.get("bandedRanges", [])
 
-    if table_range is None:
-        raise UserInputError(
-            f"Table '{table_id}' not found in spreadsheet {spreadsheet_id}. "
-            f"Use list_sheet_tables to find valid table IDs."
-        )
+    banded_range_ids = [
+        b["bandedRangeId"]
+        for b in banded_ranges
+        if b.get("range") == target_range and "bandedRangeId" in b
+    ]
 
     requests = [{"deleteBanding": {"bandedRangeId": bid}} for bid in banded_range_ids]
-    requests.append({"deleteTable": {"tableId": table_id}})
+    if table_id:
+        requests.append({"deleteTable": {"tableId": table_id}})
+
+    if not requests:
+        return (
+            f"Nothing to delete: no banded range matched {range_name} on "
+            f"sheet '{sheet_name}' in spreadsheet {spreadsheet_id} for {user_google_email}."
+        )
 
     await asyncio.to_thread(
         service.spreadsheets()
@@ -1819,15 +1855,22 @@ async def delete_sheet_table(
         .execute
     )
 
-    text_output = (
-        f"Successfully deleted table '{table_id}' "
-        f"({len(banded_range_ids)} orphaned banded range(s) also cleaned up) "
-        f"from spreadsheet {spreadsheet_id} for {user_google_email}."
-    )
+    if table_id:
+        text_output = (
+            f"Successfully deleted table '{table_id}' "
+            f"({len(banded_range_ids)} orphaned banded range(s) also cleaned up) "
+            f"from spreadsheet {spreadsheet_id} for {user_google_email}."
+        )
+    else:
+        text_output = (
+            f"Successfully deleted {len(banded_range_ids)} orphaned banded "
+            f"range(s) at {range_name} on sheet '{sheet_name}' in spreadsheet "
+            f"{spreadsheet_id} for {user_google_email}."
+        )
 
     logger.info(
-        f"[delete_sheet_table] Deleted table '{table_id}' and "
-        f"{len(banded_range_ids)} banded range(s) for {user_google_email}"
+        f"[delete_sheet_table] table_id={table_id}, "
+        f"{len(banded_range_ids)} banded range(s) deleted for {user_google_email}"
     )
     return text_output
 

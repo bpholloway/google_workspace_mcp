@@ -325,3 +325,71 @@ class TestDeleteSheetTable:
             )
 
         mock_service.spreadsheets().batchUpdate().execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_orphaned_banding_by_range_when_table_already_gone(self):
+        """A table deleted before this fix existed leaves its banded range
+        behind with no table to look it up through — sheet_name + range_name
+        must clean it up directly."""
+        spreadsheet_meta = {
+            "sheets": [
+                {
+                    "properties": {"sheetId": 999, "title": "Close"},
+                    "tables": [],
+                    "bandedRanges": [
+                        {
+                            "bandedRangeId": 77,
+                            "range": {
+                                "sheetId": 999,
+                                "startRowIndex": 19,
+                                "endRowIndex": 20,
+                                "startColumnIndex": 0,
+                                "endColumnIndex": 13,
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+        mock_service = _create_mock_service(spreadsheet_meta)
+
+        result = await _unwrap(delete_sheet_table)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            spreadsheet_id="ss_123",
+            sheet_name="Close",
+            range_name="A20:M20",
+        )
+
+        assert "Successfully deleted 1 orphaned banded range" in result
+        requests = mock_service.spreadsheets().batchUpdate.call_args[1]["body"]["requests"]
+        assert requests == [{"deleteBanding": {"bandedRangeId": 77}}]
+
+    @pytest.mark.asyncio
+    async def test_delete_orphaned_banding_by_range_no_match(self):
+        spreadsheet_meta = {
+            "sheets": [{"properties": {"sheetId": 999, "title": "Close"}, "bandedRanges": []}]
+        }
+        mock_service = _create_mock_service(spreadsheet_meta)
+
+        result = await _unwrap(delete_sheet_table)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            spreadsheet_id="ss_123",
+            sheet_name="Close",
+            range_name="A20:M20",
+        )
+
+        assert "Nothing to delete" in result
+        mock_service.spreadsheets().batchUpdate().execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_requires_table_id_or_range(self):
+        mock_service = _create_mock_service({"sheets": []})
+
+        with pytest.raises(UserInputError, match="Provide table_id"):
+            await _unwrap(delete_sheet_table)(
+                service=mock_service,
+                user_google_email="user@example.com",
+                spreadsheet_id="ss_123",
+            )
