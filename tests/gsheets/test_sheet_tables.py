@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from core.utils import UserInputError
 from gsheets.sheets_helpers import _parse_a1_part
-from gsheets.sheets_tools import append_table_rows, create_sheet_table
+from gsheets.sheets_tools import append_table_rows, create_sheet_table, delete_sheet_table
 
 
 def _unwrap(tool):
@@ -240,3 +240,21 @@ class TestAppendTableRows:
             )
 
         mock_service.spreadsheets().batchUpdate().execute.assert_not_called()
+
+
+class TestDeleteSheetTable:
+    @pytest.mark.asyncio
+    async def test_delete_success(self):
+        mock_service = _create_mock_service({"sheets": []})
+
+        result = await _unwrap(delete_sheet_table)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            spreadsheet_id="ss_123",
+            table_id="t1",
+        )
+
+        assert "Successfully deleted table 't1'" in result
+        call_args = mock_service.spreadsheets().batchUpdate.call_args
+        requests = call_args[1]["body"]["requests"]
+        assert requests == [{"deleteTable": {"tableId": "t1"}}]

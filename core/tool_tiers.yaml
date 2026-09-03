@@ -87,6 +87,7 @@ sheets:
     - create_sheet_table
     - list_sheet_tables
     - append_table_rows
+    - delete_sheet_table
     - list_spreadsheet_comments
     - manage_spreadsheet_comment
     - manage_conditional_formatting

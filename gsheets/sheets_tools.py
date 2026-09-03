@@ -1746,6 +1746,52 @@ async def append_table_rows(
     return text_output
 
 
+@server.tool()
+@handle_http_errors("delete_sheet_table", service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def delete_sheet_table(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    table_id: str,
+) -> str:
+    """
+    Deletes a structured table from a Google Sheet. This removes the table's
+    metadata only — cell values in its former range are left untouched; use
+    modify_sheet_values with clear_values=True to clear them separately.
+
+    Use list_sheet_tables first to find the table ID.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        table_id (str): The ID of the table to delete (get from list_sheet_tables). Required.
+
+    Returns:
+        str: Confirmation message of the successful table deletion.
+    """
+    logger.info(
+        f"[delete_sheet_table] Invoked. Email: '{user_google_email}', "
+        f"Spreadsheet: {spreadsheet_id}, Table: {table_id}"
+    )
+
+    request_body = {"requests": [{"deleteTable": {"tableId": table_id}}]}
+
+    await asyncio.to_thread(
+        service.spreadsheets()
+        .batchUpdate(spreadsheetId=spreadsheet_id, body=request_body)
+        .execute
+    )
+
+    text_output = (
+        f"Successfully deleted table '{table_id}' from spreadsheet "
+        f"{spreadsheet_id} for {user_google_email}."
+    )
+
+    logger.info(f"[delete_sheet_table] Deleted table '{table_id}' for {user_google_email}")
+    return text_output
+
+
 def _build_column_visibility_requests(sheet_id, letters, hidden, label):
     """Build updateDimensionProperties requests to hide/unhide columns."""
     if not isinstance(letters, list):

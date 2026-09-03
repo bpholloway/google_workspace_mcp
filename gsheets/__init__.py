@@ -14,6 +14,7 @@ from .sheets_tools import (
     create_sheet_table,
     list_sheet_tables,
     append_table_rows,
+    delete_sheet_table,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "create_sheet_table",
     "list_sheet_tables",
     "append_table_rows",
+    "delete_sheet_table",
 ]
