@@ -84,6 +84,7 @@ sheets:
     - get_spreadsheet_info
     - list_spreadsheets
     - format_sheet_range
+    - create_sheet_table
     - list_sheet_tables
     - append_table_rows
     - list_spreadsheet_comments

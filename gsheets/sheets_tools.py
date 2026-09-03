@@ -26,6 +26,7 @@ from gsheets.sheets_helpers import (
     _fetch_sheets_with_rules,
     _format_conditional_rules_section,
     _format_sheet_error_section,
+    _parse_a1_part,
     _parse_a1_range,
     _parse_condition_values,
     _parse_gradient_points,
@@ -1361,6 +1362,161 @@ def _to_extended_value(val) -> dict:
     return {"stringValue": s}
 
 
+VALID_TABLE_COLUMN_TYPES = {
+    "COLUMN_TYPE_UNSPECIFIED",
+    "DOUBLE",
+    "CURRENCY",
+    "PERCENT",
+    "DATE",
+    "TIME",
+    "DATE_TIME",
+    "TEXT",
+    "BOOLEAN",
+    "DROPDOWN",
+}
+
+
+@server.tool()
+@handle_http_errors("create_sheet_table", service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def create_sheet_table(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    table_name: str,
+    column_names: StringList,
+    sheet_name: Optional[str] = None,
+    anchor_cell: str = "A1",
+    num_body_rows: int = 0,
+    column_types: Optional[StringList] = None,
+) -> str:
+    """
+    Creates a new structured table in a Google Sheet with a header row and
+    optional empty body rows. Returns the new table's ID so append_table_rows
+    can be called directly, without a separate list_sheet_tables lookup.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        table_name (str): The display name for the new table. Required.
+        column_names (List[str]): Header names for each column, in order. Required.
+        sheet_name (Optional[str]): Name of the sheet to place the table in. Defaults to the first sheet.
+        anchor_cell (str): Top-left A1 cell of the table, e.g. "A1" or "C3". Defaults to "A1".
+        num_body_rows (int): Number of empty body rows to reserve below the header. Defaults to 0.
+        column_types (Optional[List[str]]): Column type per column (COLUMN_TYPE_UNSPECIFIED,
+            DOUBLE, CURRENCY, PERCENT, DATE, TIME, DATE_TIME, TEXT, BOOLEAN, DROPDOWN).
+            Must match column_names length if provided.
+
+    Returns:
+        str: Confirmation message including the new table's ID.
+    """
+    logger.info(
+        f"[create_sheet_table] Invoked. Email: '{user_google_email}', "
+        f"Spreadsheet: {spreadsheet_id}, table_name='{table_name}'"
+    )
+
+    if not column_names:
+        raise UserInputError("column_names must be a non-empty list of header names.")
+
+    if column_types is not None:
+        if len(column_types) != len(column_names):
+            raise UserInputError(
+                "column_types must have the same length as column_names when provided."
+            )
+        for col_type in column_types:
+            if col_type not in VALID_TABLE_COLUMN_TYPES:
+                raise UserInputError(
+                    f"Invalid column type '{col_type}'. Must be one of: "
+                    f"{', '.join(sorted(VALID_TABLE_COLUMN_TYPES))}."
+                )
+
+    if num_body_rows < 0:
+        raise UserInputError("num_body_rows must be zero or a positive integer.")
+
+    spreadsheet = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,title))")
+        .execute
+    )
+    sheets = spreadsheet.get("sheets", [])
+    target_sheet = _select_sheet(sheets, sheet_name)
+    sheet_id = target_sheet["properties"]["sheetId"]
+    target_sheet_title = target_sheet["properties"].get("title")
+
+    start_col, start_row = _parse_a1_part(anchor_cell)
+    start_col = start_col or 0
+    start_row = start_row or 0
+
+    num_columns = len(column_names)
+    end_row_index = start_row + 1 + num_body_rows
+    end_col_index = start_col + num_columns
+
+    # columnIndex is 0-based *relative to the table* (per the Sheets API's
+    # TableColumnProperties.columnIndex), not an absolute sheet column —
+    # do not add start_col here.
+    column_properties = []
+    for idx, col_name in enumerate(column_names):
+        column_property = {"columnIndex": idx, "columnName": col_name}
+        if column_types:
+            column_property["columnType"] = column_types[idx]
+        column_properties.append(column_property)
+
+    table_body = {
+        "name": table_name,
+        "range": {
+            "sheetId": sheet_id,
+            "startRowIndex": start_row,
+            "endRowIndex": end_row_index,
+            "startColumnIndex": start_col,
+            "endColumnIndex": end_col_index,
+        },
+        "columnProperties": column_properties,
+    }
+
+    # Write the header text directly at its absolute grid position too,
+    # rather than relying solely on columnProperties.columnName to land in
+    # the right cells — this is independent of the table's anchor.
+    header_cells = [{"userEnteredValue": {"stringValue": str(name)}} for name in column_names]
+
+    request_body = {
+        "requests": [
+            {"addTable": {"table": table_body}},
+            {
+                "updateCells": {
+                    "rows": [{"values": header_cells}],
+                    "fields": "userEnteredValue",
+                    "start": {
+                        "sheetId": sheet_id,
+                        "rowIndex": start_row,
+                        "columnIndex": start_col,
+                    },
+                }
+            },
+        ]
+    }
+
+    response = await asyncio.to_thread(
+        service.spreadsheets()
+        .batchUpdate(spreadsheetId=spreadsheet_id, body=request_body)
+        .execute
+    )
+
+    created_table = response["replies"][0]["addTable"]["table"]
+    table_id = created_table.get("tableId")
+
+    text_output = (
+        f"Successfully created table '{table_name}' (ID: {table_id}) with "
+        f"{num_columns} column(s) and {num_body_rows} body row(s) in sheet "
+        f"'{target_sheet_title}' of spreadsheet {spreadsheet_id} for {user_google_email}. "
+        f"Use append_table_rows with table_id='{table_id}' to add data."
+    )
+
+    logger.info(
+        f"[create_sheet_table] Created table '{table_id}' for {user_google_email}"
+    )
+    return text_output
+
+
 @server.tool()
 @handle_http_errors("list_sheet_tables", is_read_only=True, service_type="sheets")
 @require_google_service("sheets", "sheets_read")
@@ -1448,8 +1604,9 @@ async def append_table_rows(
     values: Union[str, List[List]],
 ) -> str:
     """
-    Appends rows to a structured table in a Google Sheet. The rows are added
-    to the end of the table body, automatically extending the table range.
+    Appends rows to a structured table in a Google Sheet by extending the
+    table's range and writing the new rows at its current end, so this works
+    whether or not the table already has body rows.
 
     Use list_sheet_tables first to find the table ID.
 
@@ -1461,7 +1618,8 @@ async def append_table_rows(
             list is one row. Can be a JSON string or Python list. Required.
 
     Returns:
-        str: Confirmation message with the number of rows appended.
+        str: Confirmation message with the number of rows appended and the
+            table's new endRowIndex.
     """
     logger.info(
         f"[append_table_rows] Invoked. Email: '{user_google_email}', "
@@ -1478,32 +1636,41 @@ async def append_table_rows(
     if not values or not isinstance(values, list):
         raise UserInputError("values must be a non-empty 2D list of cell values.")
 
-    # Resolve the sheet ID for the table before building the request
+    # Resolve the table's current range before building the request
     spreadsheet = await asyncio.to_thread(
         service.spreadsheets()
         .get(
             spreadsheetId=spreadsheet_id,
-            fields="sheets(properties(sheetId),tables(tableId))",
+            fields="sheets(properties(sheetId),tables(tableId,range))",
         )
         .execute
     )
 
     sheet_id = None
+    table_range = None
     for sheet in spreadsheet.get("sheets", []):
         for table in sheet.get("tables", []):
             if table.get("tableId") == table_id:
                 sheet_id = sheet["properties"]["sheetId"]
+                table_range = table.get("range", {})
                 break
-        if sheet_id is not None:
+        if table_range is not None:
             break
 
-    if sheet_id is None:
+    if table_range is None:
         raise UserInputError(
             f"Table '{table_id}' not found in spreadsheet {spreadsheet_id}. "
             f"Use list_sheet_tables to find valid table IDs."
         )
 
-    # Build cell data for appendCells
+    start_row_index = table_range.get("endRowIndex")
+    start_col_index = table_range.get("startColumnIndex", 0)
+    if start_row_index is None:
+        raise UserInputError(
+            f"Table '{table_id}' has no resolvable row range in spreadsheet {spreadsheet_id}."
+        )
+
+    # Build cell data to write
     rows = []
     for row_values in values:
         if not isinstance(row_values, list):
@@ -1516,16 +1683,33 @@ async def append_table_rows(
             cells.append({"userEnteredValue": _to_extended_value(val)})
         rows.append({"values": cells})
 
+    num_rows = len(values)
+    new_end_row_index = start_row_index + num_rows
+    new_range = dict(table_range)
+    new_range["endRowIndex"] = new_end_row_index
+
+    # Extend the table's range and write the new rows in one batchUpdate.
+    # This never relies on Sheets locating an "existing last row" for the
+    # table (appendCells' behavior), which 500s when the table is header-only.
     request_body = {
         "requests": [
             {
-                "appendCells": {
-                    "sheetId": sheet_id,
-                    "tableId": table_id,
+                "updateTable": {
+                    "table": {"tableId": table_id, "range": new_range},
+                    "fields": "range",
+                }
+            },
+            {
+                "updateCells": {
                     "rows": rows,
                     "fields": "userEnteredValue",
+                    "start": {
+                        "sheetId": sheet_id,
+                        "rowIndex": start_row_index,
+                        "columnIndex": start_col_index,
+                    },
                 }
-            }
+            },
         ]
     }
 
@@ -1535,13 +1719,16 @@ async def append_table_rows(
         .execute
     )
 
-    num_rows = len(values)
     text_output = (
         f"Successfully appended {num_rows} row(s) to table '{table_id}' "
-        f"in spreadsheet {spreadsheet_id} for {user_google_email}."
+        f"in spreadsheet {spreadsheet_id} for {user_google_email}. "
+        f"Table's new endRowIndex: {new_end_row_index}."
     )
 
-    logger.info(f"[append_table_rows] Appended {num_rows} rows for {user_google_email}")
+    logger.info(
+        f"[append_table_rows] Appended {num_rows} rows for {user_google_email}, "
+        f"new endRowIndex={new_end_row_index}"
+    )
     return text_output
 
 
