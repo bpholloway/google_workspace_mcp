@@ -1756,9 +1756,13 @@ async def delete_sheet_table(
     table_id: str,
 ) -> str:
     """
-    Deletes a structured table from a Google Sheet. This removes the table's
-    metadata only — cell values in its former range are left untouched; use
-    modify_sheet_values with clear_values=True to clear them separately.
+    Deletes a structured table from a Google Sheet, including the alternating
+    -colors banded range addTable auto-creates for it (deleteTable alone
+    leaves that banding orphaned, which then blocks future addTable calls on
+    the same sheet with "You cannot add alternating background colors to a
+    range that already has alternating background colors"). Cell values in
+    the table's former range are left untouched; use modify_sheet_values with
+    clear_values=True to clear them separately.
 
     Use list_sheet_tables first to find the table ID.
 
@@ -1775,20 +1779,56 @@ async def delete_sheet_table(
         f"Spreadsheet: {spreadsheet_id}, Table: {table_id}"
     )
 
-    request_body = {"requests": [{"deleteTable": {"tableId": table_id}}]}
+    spreadsheet = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId),tables(tableId,range),bandedRanges)",
+        )
+        .execute
+    )
+
+    table_range = None
+    banded_range_ids = []
+    for sheet in spreadsheet.get("sheets", []):
+        sheet_tables = sheet.get("tables", [])
+        if not any(t.get("tableId") == table_id for t in sheet_tables):
+            continue
+        table_range = next(
+            t["range"] for t in sheet_tables if t.get("tableId") == table_id
+        )
+        # addTable auto-creates a banded (alternating colors) range matching
+        # the table's range; deleteTable does not clean it up on its own.
+        for banded in sheet.get("bandedRanges", []):
+            if banded.get("range") == table_range and "bandedRangeId" in banded:
+                banded_range_ids.append(banded["bandedRangeId"])
+        break
+
+    if table_range is None:
+        raise UserInputError(
+            f"Table '{table_id}' not found in spreadsheet {spreadsheet_id}. "
+            f"Use list_sheet_tables to find valid table IDs."
+        )
+
+    requests = [{"deleteBanding": {"bandedRangeId": bid}} for bid in banded_range_ids]
+    requests.append({"deleteTable": {"tableId": table_id}})
 
     await asyncio.to_thread(
         service.spreadsheets()
-        .batchUpdate(spreadsheetId=spreadsheet_id, body=request_body)
+        .batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests})
         .execute
     )
 
     text_output = (
-        f"Successfully deleted table '{table_id}' from spreadsheet "
-        f"{spreadsheet_id} for {user_google_email}."
+        f"Successfully deleted table '{table_id}' "
+        f"({len(banded_range_ids)} orphaned banded range(s) also cleaned up) "
+        f"from spreadsheet {spreadsheet_id} for {user_google_email}."
     )
 
-    logger.info(f"[delete_sheet_table] Deleted table '{table_id}' for {user_google_email}")
+    logger.info(
+        f"[delete_sheet_table] Deleted table '{table_id}' and "
+        f"{len(banded_range_ids)} banded range(s) for {user_google_email}"
+    )
     return text_output
 
 

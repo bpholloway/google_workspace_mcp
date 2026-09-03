@@ -243,9 +243,32 @@ class TestAppendTableRows:
 
 
 class TestDeleteSheetTable:
+    TABLE_RANGE = {
+        "sheetId": 5,
+        "startRowIndex": 0,
+        "endRowIndex": 1,
+        "startColumnIndex": 0,
+        "endColumnIndex": 3,
+    }
+
     @pytest.mark.asyncio
-    async def test_delete_success(self):
-        mock_service = _create_mock_service({"sheets": []})
+    async def test_delete_also_removes_orphaned_banded_range(self):
+        """addTable auto-creates banding for its range; deleteTable alone
+        leaves it orphaned, which then blocks future addTable calls on the
+        same sheet. delete_sheet_table must clean it up too."""
+        spreadsheet_meta = {
+            "sheets": [
+                {
+                    "properties": {"sheetId": 5},
+                    "tables": [{"tableId": "t1", "range": self.TABLE_RANGE}],
+                    "bandedRanges": [
+                        {"bandedRangeId": 42, "range": self.TABLE_RANGE},
+                        {"bandedRangeId": 99, "range": {**self.TABLE_RANGE, "startRowIndex": 50}},
+                    ],
+                }
+            ]
+        }
+        mock_service = _create_mock_service(spreadsheet_meta)
 
         result = await _unwrap(delete_sheet_table)(
             service=mock_service,
@@ -255,6 +278,50 @@ class TestDeleteSheetTable:
         )
 
         assert "Successfully deleted table 't1'" in result
+        assert "1 orphaned banded range" in result
+
         call_args = mock_service.spreadsheets().batchUpdate.call_args
         requests = call_args[1]["body"]["requests"]
+        # The matching banded range (42) must be deleted; the unrelated one
+        # (99, different range) must be left alone.
+        assert {"deleteBanding": {"bandedRangeId": 42}} in requests
+        assert {"deleteBanding": {"bandedRangeId": 99}} not in requests
+        assert {"deleteTable": {"tableId": "t1"}} in requests
+
+    @pytest.mark.asyncio
+    async def test_delete_with_no_banding_present(self):
+        spreadsheet_meta = {
+            "sheets": [
+                {
+                    "properties": {"sheetId": 5},
+                    "tables": [{"tableId": "t1", "range": self.TABLE_RANGE}],
+                    "bandedRanges": [],
+                }
+            ]
+        }
+        mock_service = _create_mock_service(spreadsheet_meta)
+
+        result = await _unwrap(delete_sheet_table)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            spreadsheet_id="ss_123",
+            table_id="t1",
+        )
+
+        assert "0 orphaned banded range" in result
+        requests = mock_service.spreadsheets().batchUpdate.call_args[1]["body"]["requests"]
         assert requests == [{"deleteTable": {"tableId": "t1"}}]
+
+    @pytest.mark.asyncio
+    async def test_delete_table_not_found_raises(self):
+        mock_service = _create_mock_service({"sheets": []})
+
+        with pytest.raises(UserInputError, match="not found"):
+            await _unwrap(delete_sheet_table)(
+                service=mock_service,
+                user_google_email="user@example.com",
+                spreadsheet_id="ss_123",
+                table_id="missing",
+            )
+
+        mock_service.spreadsheets().batchUpdate().execute.assert_not_called()
