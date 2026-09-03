@@ -1473,36 +1473,50 @@ async def create_sheet_table(
         "columnProperties": column_properties,
     }
 
-    # Write the header text directly at its absolute grid position too,
-    # rather than relying solely on columnProperties.columnName to land in
-    # the right cells — this is independent of the table's anchor.
-    header_cells = [{"userEnteredValue": {"stringValue": str(name)}} for name in column_names]
-
-    request_body = {
-        "requests": [
-            {"addTable": {"table": table_body}},
-            {
-                "updateCells": {
-                    "rows": [{"values": header_cells}],
-                    "fields": "userEnteredValue",
-                    "start": {
-                        "sheetId": sheet_id,
-                        "rowIndex": start_row,
-                        "columnIndex": start_col,
-                    },
-                }
-            },
-        ]
-    }
-
+    # Sending addTable and a header updateCells in the same batchUpdate causes
+    # a Google-side 500 (confirmed via live retest) — the table isn't fully
+    # committed within the batch before updateCells targets its own header
+    # cells. Create the table first, then write the header text as a
+    # separate batchUpdate once the table exists.
     response = await asyncio.to_thread(
         service.spreadsheets()
-        .batchUpdate(spreadsheetId=spreadsheet_id, body=request_body)
+        .batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{"addTable": {"table": table_body}}]},
+        )
         .execute
     )
 
     created_table = response["replies"][0]["addTable"]["table"]
     table_id = created_table.get("tableId")
+
+    # Write the header text directly at its absolute grid position too,
+    # rather than relying solely on columnProperties.columnName to land in
+    # the right cells — this is independent of the table's anchor.
+    header_cells = [{"userEnteredValue": {"stringValue": str(name)}} for name in column_names]
+
+    await asyncio.to_thread(
+        service.spreadsheets()
+        .batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [
+                    {
+                        "updateCells": {
+                            "rows": [{"values": header_cells}],
+                            "fields": "userEnteredValue",
+                            "start": {
+                                "sheetId": sheet_id,
+                                "rowIndex": start_row,
+                                "columnIndex": start_col,
+                            },
+                        }
+                    }
+                ]
+            },
+        )
+        .execute
+    )
 
     text_output = (
         f"Successfully created table '{table_name}' (ID: {table_id}) with "

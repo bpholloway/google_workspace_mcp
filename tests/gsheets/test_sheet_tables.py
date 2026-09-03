@@ -76,17 +76,28 @@ class TestCreateSheetTable:
             num_body_rows=0,
         )
 
-        call_args = mock_service.spreadsheets().batchUpdate.call_args
-        requests = call_args[1]["body"]["requests"]
-        assert len(requests) == 2
+        # addTable and the header updateCells must be two separate
+        # batchUpdate calls — combining them in one batch 500s server-side
+        # (confirmed via live retest), even though each is valid alone.
+        # (The mock's own setup call shows up as a no-arg call() too, so
+        # filter to calls that actually carry a request body.)
+        calls = [
+            c for c in mock_service.spreadsheets().batchUpdate.call_args_list
+            if c.kwargs.get("body")
+        ]
+        assert len(calls) == 2
 
-        add_table = requests[0]["addTable"]["table"]
+        add_table_body = calls[0][1]["body"]
+        assert list(add_table_body["requests"][0].keys()) == ["addTable"]
+        add_table = add_table_body["requests"][0]["addTable"]["table"]
         # columnIndex must be table-relative (0-based), independent of anchor.
         assert [cp["columnIndex"] for cp in add_table["columnProperties"]] == [0, 1, 2]
         assert add_table["range"]["startColumnIndex"] == 2
         assert add_table["range"]["startRowIndex"] == 2
 
-        update_cells = requests[1]["updateCells"]
+        update_cells_body = calls[1][1]["body"]
+        assert list(update_cells_body["requests"][0].keys()) == ["updateCells"]
+        update_cells = update_cells_body["requests"][0]["updateCells"]
         # The header write must start at the same row/column as the table range.
         assert update_cells["start"] == {
             "sheetId": 999,
@@ -114,9 +125,13 @@ class TestCreateSheetTable:
             num_body_rows=0,
         )
 
-        requests = mock_service.spreadsheets().batchUpdate.call_args[1]["body"]["requests"]
-        add_table = requests[0]["addTable"]["table"]
-        update_cells = requests[1]["updateCells"]
+        calls = [
+            c for c in mock_service.spreadsheets().batchUpdate.call_args_list
+            if c.kwargs.get("body")
+        ]
+        assert len(calls) == 2
+        add_table = calls[0][1]["body"]["requests"][0]["addTable"]["table"]
+        update_cells = calls[1][1]["body"]["requests"][0]["updateCells"]
 
         # Row offset must never leak into the column position.
         assert add_table["range"]["startColumnIndex"] == 0
