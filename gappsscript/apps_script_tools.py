@@ -9,6 +9,7 @@ import asyncio
 from typing import List, Dict, Any, Optional
 
 from auth.service_decorator import require_google_service
+from auth.scopes import SCRIPT_METRICS_SCOPE, SCRIPT_PROCESSES_READONLY_SCOPE
 from core.server import server
 from core.utils import handle_http_errors
 
@@ -643,7 +644,7 @@ async def _list_script_processes_impl(
 
     request_params = {"pageSize": page_size}
     if script_id:
-        request_params["scriptId"] = script_id
+        request_params["userProcessFilter_scriptId"] = script_id
 
     response = await asyncio.to_thread(
         service.processes().list(**request_params).execute
@@ -674,7 +675,7 @@ async def _list_script_processes_impl(
 
 @server.tool()
 @handle_http_errors("list_script_processes", is_read_only=True, service_type="script")
-@require_google_service("script", "script_readonly")
+@require_google_service("script", SCRIPT_PROCESSES_READONLY_SCOPE)
 async def list_script_processes(
     service: Any,
     user_google_email: str,
@@ -722,7 +723,7 @@ async def _delete_script_project_impl(
 
 @server.tool()
 @handle_http_errors("delete_script_project", is_read_only=False, service_type="drive")
-@require_google_service("drive", "drive_full")
+@require_google_service("drive", "drive")
 async def delete_script_project(
     service: Any,
     user_google_email: str,
@@ -841,7 +842,7 @@ async def _create_version_impl(
 
 @server.tool()
 @handle_http_errors("create_version", is_read_only=False, service_type="script")
-@require_google_service("script", "script_full")
+@require_google_service("script", "script_projects")
 async def create_version(
     service: Any,
     user_google_email: str,
@@ -999,7 +1000,7 @@ async def _get_script_metrics_impl(
 
 @server.tool()
 @handle_http_errors("get_script_metrics", is_read_only=True, service_type="script")
-@require_google_service("script", "script_readonly")
+@require_google_service("script", SCRIPT_METRICS_SCOPE)
 async def get_script_metrics(
     service: Any,
     user_google_email: str,

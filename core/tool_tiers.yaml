@@ -125,3 +125,22 @@ contacts:
   complete:
     - manage_contacts_batch
     - manage_contact_group
+appscript:
+  core:
+    - list_script_projects
+    - get_script_project
+    - get_script_content
+    - create_script_project
+    - update_script_content
+    - run_script_function
+    - manage_deployment
+    - list_deployments
+    - list_script_processes
+    - delete_script_project
+    - list_versions
+    - create_version
+    - get_version
+    - get_script_metrics
+    - generate_trigger_code
+  extended: []
+  complete: []
