@@ -723,7 +723,7 @@ async def _delete_script_project_impl(
 
 @server.tool()
 @handle_http_errors("delete_script_project", is_read_only=False, service_type="drive")
-@require_google_service("drive", "drive")
+@require_google_service("drive", "drive_file")
 async def delete_script_project(
     service: Any,
     user_google_email: str,
