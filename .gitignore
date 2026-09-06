@@ -37,5 +37,8 @@ mcp-stdout-*.log
 Caddyfile
 ecosystem.config.cjs
 
+# ---- MCP credential/token state (BL-104) --------------------------------
+/state/
+
 # ---- Agent instructions (not for distribution) -------------------------
 .github/instructions/
