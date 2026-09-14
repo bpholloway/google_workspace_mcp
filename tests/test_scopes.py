@@ -26,8 +26,11 @@ from auth.scopes import (
     GMAIL_READONLY_SCOPE,
     GMAIL_SEND_SCOPE,
     GMAIL_SETTINGS_BASIC_SCOPE,
+    SCOPE_HIERARCHY,
+    SCRIPT_PROJECTS_SCOPE,
     SHEETS_READONLY_SCOPE,
     SHEETS_WRITE_SCOPE,
+    _minimize_scopes,
     get_scopes_for_tools,
     has_required_scopes,
     set_read_only,
@@ -215,10 +218,13 @@ class TestGranularPermissionsScopes:
         set_permissions({"gmail": "send", "drive": "readonly"})
         scopes = get_scopes_for_tools(["calendar"])  # ignored in permissions mode
 
-        expected = set(BASE_SCOPES)
-        expected.update(get_scopes_for_permission("gmail", "send"))
-        expected.update(get_scopes_for_permission("drive", "readonly"))
-        assert set(scopes) == expected
+        raw = set(BASE_SCOPES)
+        raw.update(get_scopes_for_permission("gmail", "send"))
+        raw.update(get_scopes_for_permission("drive", "readonly"))
+        # "gmail":"send" is cumulative (auth/permissions.py) and includes
+        # GMAIL_MODIFY_SCOPE, which covers readonly/labels/compose/send per
+        # SCOPE_HIERARCHY -- the permissions-mode branch minimizes too (B6.2).
+        assert set(scopes) == _minimize_scopes(raw)
 
     def test_permissions_mode_overrides_read_only_and_full_maps(self):
         set_read_only(True)
@@ -229,3 +235,72 @@ class TestGranularPermissionsScopes:
         with_permissions = get_scopes_for_tools(["drive"])
         assert GMAIL_READONLY_SCOPE in with_permissions
         assert DRIVE_READONLY_SCOPE not in with_permissions
+
+
+class TestScopeMinimization:
+    """Tests for B6.2 (BL-113): get_scopes_for_tools drops any scope already
+    implied by a broader scope also present, per SCOPE_HIERARCHY."""
+
+    def setup_method(self):
+        set_read_only(False)
+
+    def teardown_method(self):
+        set_read_only(False)
+
+    def test_minimize_scopes_drops_narrower_when_parent_present(self):
+        """Direct unit test of the minimization helper itself."""
+        result = _minimize_scopes({DRIVE_SCOPE, DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE})
+        assert result == {DRIVE_SCOPE}
+
+    def test_minimize_scopes_keeps_narrower_when_parent_absent(self):
+        """No broader scope present -> nothing to collapse."""
+        result = _minimize_scopes({DRIVE_READONLY_SCOPE})
+        assert result == {DRIVE_READONLY_SCOPE}
+
+    def test_minimize_scopes_is_a_noop_on_scopes_with_no_hierarchy_relation(self):
+        result = _minimize_scopes({SCRIPT_PROJECTS_SCOPE})
+        assert result == {SCRIPT_PROJECTS_SCOPE}
+
+    def test_drive_group_collapses_readonly_and_file(self):
+        """The 'drive' tool group itself requests DRIVE_SCOPE, DRIVE_READONLY_SCOPE,
+        and DRIVE_FILE_SCOPE together (auth/scopes.py DRIVE_SCOPES) -- the two
+        narrower ones must not survive minimization."""
+        scopes = get_scopes_for_tools(["drive"])
+        assert DRIVE_SCOPE in scopes
+        assert DRIVE_READONLY_SCOPE not in scopes
+        assert DRIVE_FILE_SCOPE not in scopes
+
+    def test_gmail_group_collapses_to_modify_plus_settings(self):
+        """The 'gmail' group requests readonly/send/compose/labels alongside
+        modify (auth/scopes.py GMAIL_SCOPES); modify covers the first four."""
+        scopes = get_scopes_for_tools(["gmail"])
+        assert GMAIL_MODIFY_SCOPE in scopes
+        for narrower in (
+            GMAIL_READONLY_SCOPE,
+            GMAIL_SEND_SCOPE,
+            GMAIL_COMPOSE_SCOPE,
+            GMAIL_LABELS_SCOPE,
+        ):
+            assert narrower not in scopes
+        # Not covered by modify -- must survive.
+        assert GMAIL_SETTINGS_BASIC_SCOPE in scopes
+
+    def test_calendar_group_collapses_to_full_calendar(self):
+        scopes = get_scopes_for_tools(["calendar"])
+        assert CALENDAR_SCOPE in scopes
+        assert CALENDAR_READONLY_SCOPE not in scopes
+
+    def test_minimized_scopes_still_satisfy_has_required_scopes(self):
+        """A tool declaring the narrower scope as its requirement must still pass
+        has_required_scopes() against the minimized (broader-only) granted set --
+        that's the whole point of SCOPE_HIERARCHY expansion staying unchanged."""
+        granted = get_scopes_for_tools(["drive"])
+        assert DRIVE_READONLY_SCOPE not in granted  # minimized away
+        assert has_required_scopes(granted, [DRIVE_READONLY_SCOPE])  # still passes
+
+    def test_every_hierarchy_parent_present_collapses_its_children(self):
+        """General property check across the whole SCOPE_HIERARCHY table, not
+        just the specific groups exercised above."""
+        for parent, children in SCOPE_HIERARCHY.items():
+            result = _minimize_scopes({parent, *children})
+            assert result == {parent}, f"{parent} did not collapse {children}"

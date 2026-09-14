@@ -128,6 +128,21 @@ def has_required_scopes(available_scopes, required_scopes):
     return all(scope in expanded for scope in required)
 
 
+def _minimize_scopes(scopes):
+    """Drop any scope already implied by a broader scope in the same set.
+
+    Uses SCOPE_HIERARCHY (the same table has_required_scopes expands against),
+    so a minimized set still satisfies every narrower requirement a tool
+    declares via has_required_scopes.
+    """
+    scope_set = set(scopes)
+    covered = set()
+    for broad_scope, narrower_scopes in SCOPE_HIERARCHY.items():
+        if broad_scope in scope_set:
+            covered.update(narrower_scopes)
+    return scope_set - covered
+
+
 # Base OAuth scopes required for user identification
 BASE_SCOPES = [USERINFO_EMAIL_SCOPE, USERINFO_PROFILE_SCOPE, OPENID_SCOPE]
 
@@ -301,11 +316,14 @@ def get_scopes_for_tools(enabled_tools=None):
         if is_permissions_mode():
             scopes = BASE_SCOPES.copy()
             scopes.extend(get_all_permission_scopes())
+            minimized = _minimize_scopes(scopes)
             logger.debug(
-                "Generated scopes from granular permissions: %d unique scopes",
+                "Generated scopes from granular permissions: %d unique scopes "
+                "(%d before minimization)",
+                len(minimized),
                 len(set(scopes)),
             )
-            return list(set(scopes))
+            return list(minimized)
     except ImportError:
         pass
 
@@ -325,11 +343,13 @@ def get_scopes_for_tools(enabled_tools=None):
         if tool in scope_map:
             scopes.extend(scope_map[tool])
 
+    minimized = _minimize_scopes(scopes)
     logger.debug(
-        f"Generated {mode_str} scopes for tools {list(enabled_tools)}: {len(set(scopes))} unique scopes"
+        f"Generated {mode_str} scopes for tools {list(enabled_tools)}: "
+        f"{len(minimized)} unique scopes ({len(set(scopes))} before minimization)"
     )
-    # Return unique scopes
-    return list(set(scopes))
+    # Return minimized scopes (redundant narrower scopes dropped per SCOPE_HIERARCHY)
+    return list(minimized)
 
 
 # Combined scopes for all supported Google Workspace operations (backwards compatibility)
