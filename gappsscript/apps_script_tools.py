@@ -6,6 +6,7 @@ This module provides MCP tools for interacting with Google Apps Script API.
 
 import logging
 import asyncio
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 from auth.service_decorator import require_google_service
@@ -720,11 +721,21 @@ async def _delete_script_project_impl(
         f"[delete_script_project] Email: {user_google_email}, ScriptID: {script_id}"
     )
 
-    # Apps Script projects are stored as Drive files
-    await asyncio.to_thread(service.files().delete(fileId=script_id).execute)
+    # Apps Script projects are stored as Drive files. Trash instead of permanently
+    # deleting so the action is recoverable (Drive trash, not a hard delete).
+    await asyncio.to_thread(
+        service.files().update(fileId=script_id, body={"trashed": True}).execute
+    )
 
-    logger.info(f"[delete_script_project] Deleted script {script_id}")
-    return f"Deleted Apps Script project: {script_id}"
+    trashed_at = datetime.now(timezone.utc).isoformat()
+
+    logger.info(f"[delete_script_project] Trashed script {script_id}")
+    return (
+        "Trashed Apps Script project\n"
+        f"File ID: {script_id}\n"
+        f"Trashed by: {user_google_email}\n"
+        f"Trashed at: {trashed_at}"
+    )
 
 
 @server.tool()
@@ -736,17 +747,19 @@ async def delete_script_project(
     script_id: str,
 ) -> str:
     """
-    Deletes an Apps Script project.
+    Moves an Apps Script project to Drive trash.
 
-    This permanently deletes the script project. The action cannot be undone.
+    This is a trash operation, not a permanent delete — the project can be
+    restored from Drive trash afterward.
 
     Args:
         service: Injected Google API service client
         user_google_email: User's email address
-        script_id: The script project ID to delete
+        script_id: The script project ID to trash
 
     Returns:
-        str: Confirmation message
+        str: Confirmation message including the acting user's email, an ISO
+            timestamp, and the file ID
     """
     return await _delete_script_project_impl(service, user_google_email, script_id)
 

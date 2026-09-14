@@ -283,15 +283,25 @@ async def test_list_script_processes():
 
 @pytest.mark.asyncio
 async def test_delete_script_project():
-    """Test deleting a script project"""
+    """delete_script_project trashes the Drive file (recoverable) instead of a
+    permanent delete, and reports who did it, when, and which file (B6.5 / BL-113)."""
     mock_service = Mock()
-    mock_service.files().delete().execute.return_value = {}
+    mock_service.files().update().execute.return_value = {}
 
     result = await _delete_script_project_impl(
         service=mock_service, user_google_email="test@example.com", script_id="test123"
     )
 
-    assert "Deleted Apps Script project: test123" in result
+    assert "test123" in result
+    assert "test@example.com" in result
+    # ISO 8601 timestamp with a UTC offset marker.
+    assert "+00:00" in result or "Z" in result
+
+    # Must trash via files().update(trashed=True), never a permanent files().delete().
+    _, update_kwargs = mock_service.files().update.call_args
+    assert update_kwargs["fileId"] == "test123"
+    assert update_kwargs["body"] == {"trashed": True}
+    mock_service.files().delete.assert_not_called()
 
 
 @pytest.mark.asyncio
