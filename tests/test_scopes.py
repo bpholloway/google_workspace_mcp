@@ -290,6 +290,21 @@ class TestScopeMinimization:
         assert CALENDAR_SCOPE in scopes
         assert CALENDAR_READONLY_SCOPE not in scopes
 
+    def test_cross_group_minimization_appscript_plus_drive(self):
+        """B6.3: appscript's own DRIVE_READONLY_SCOPE collapses under the full
+        'drive' group's DRIVE_SCOPE when both groups are enabled together."""
+        scopes = get_scopes_for_tools(["appscript", "drive"])
+        assert DRIVE_SCOPE in scopes
+        assert DRIVE_READONLY_SCOPE not in scopes
+        assert DRIVE_FILE_SCOPE not in scopes
+
+    def test_appscript_alone_keeps_drive_readonly(self):
+        """B6.3: without the 'drive' group also enabled, appscript must still be
+        self-sufficient for list_script_projects/get_script_project's drive_read
+        requirement -- nothing to collapse it against."""
+        scopes = get_scopes_for_tools(["appscript"])
+        assert DRIVE_READONLY_SCOPE in scopes
+
     def test_minimized_scopes_still_satisfy_has_required_scopes(self):
         """A tool declaring the narrower scope as its requirement must still pass
         has_required_scopes() against the minimized (broader-only) granted set --

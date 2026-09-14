@@ -197,7 +197,8 @@ SCRIPT_SCOPES = [
     SCRIPT_DEPLOYMENTS_READONLY_SCOPE,
     SCRIPT_PROCESSES_READONLY_SCOPE,  # Required for list_script_processes
     SCRIPT_METRICS_SCOPE,  # Required for get_script_metrics
-    DRIVE_FILE_SCOPE,  # Required for list/delete script projects (uses Drive API)
+    DRIVE_FILE_SCOPE,  # Required for create/update/delete of script projects (uses Drive API)
+    DRIVE_READONLY_SCOPE,  # Required by list_script_projects/get_script_project's drive_read decorator
 ]
 
 # Tool-to-scopes mapping
