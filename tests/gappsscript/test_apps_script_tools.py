@@ -136,7 +136,10 @@ async def test_update_script_content():
 
 @pytest.mark.asyncio
 async def test_run_script_function():
-    """Test executing script function"""
+    """run_script_function takes a deployment ID, not a script/project ID, and
+    passes it straight through to scripts().run(scriptId=...) unmodified -- that
+    keyword is the Apps Script API client's fixed argument name, but the value
+    it actually expects is the deployment ID (see B6.4 / BL-113)."""
     mock_service = Mock()
     mock_response = {"response": {"result": "Success"}}
 
@@ -145,13 +148,18 @@ async def test_run_script_function():
     result = await _run_script_function_impl(
         service=mock_service,
         user_google_email="test@example.com",
-        script_id="test123",
+        deployment_id="deploy123",
         function_name="myFunction",
         dev_mode=True,
     )
 
     assert "Execution successful" in result
     assert "myFunction" in result
+
+    # The deployment ID must land in the scriptId kwarg unmodified -- no project-ID
+    # acceptance, no resolver in between.
+    _, run_kwargs = mock_service.scripts().run.call_args
+    assert run_kwargs["scriptId"] == "deploy123"
 
 
 @pytest.mark.asyncio

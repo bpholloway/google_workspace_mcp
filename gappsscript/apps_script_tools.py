@@ -342,14 +342,14 @@ async def update_script_content(
 async def _run_script_function_impl(
     service: Any,
     user_google_email: str,
-    script_id: str,
+    deployment_id: str,
     function_name: str,
     parameters: Optional[list[object]] = None,
     dev_mode: bool = False,
 ) -> str:
     """Internal implementation for run_script_function."""
     logger.info(
-        f"[run_script_function] Email: {user_google_email}, ID: {script_id}, Function: {function_name}"
+        f"[run_script_function] Email: {user_google_email}, DeploymentID: {deployment_id}, Function: {function_name}"
     )
 
     request_body = {"function": function_name, "devMode": dev_mode}
@@ -358,8 +358,13 @@ async def _run_script_function_impl(
         request_body["parameters"] = parameters
 
     try:
+        # The Apps Script API's scripts.run method takes the API Executable
+        # deployment ID here (from list_deployments), not the script project ID.
+        # The generated client library's keyword for this argument is fixed as
+        # "scriptId" (see the script.googleapis.com discovery document), but the
+        # value it actually expects is the deployment ID.
         response = await asyncio.to_thread(
-            service.scripts().run(scriptId=script_id, body=request_body).execute
+            service.scripts().run(scriptId=deployment_id, body=request_body).execute
         )
 
         if "error" in response:
@@ -390,7 +395,7 @@ async def _run_script_function_impl(
 async def run_script_function(
     service: Any,
     user_google_email: str,
-    script_id: str,
+    deployment_id: str,
     function_name: str,
     parameters: Optional[list[object]] = None,
     dev_mode: bool = False,
@@ -401,7 +406,8 @@ async def run_script_function(
     Args:
         service: Injected Google API service client
         user_google_email: User's email address
-        script_id: The script project ID
+        deployment_id: The API Executable deployment ID to run (from
+            list_deployments) — not the script project ID.
         function_name: Name of function to execute
         parameters: Optional list of parameters to pass
         dev_mode: Whether to run latest code vs deployed version
@@ -410,7 +416,7 @@ async def run_script_function(
         str: Formatted string with execution result or error
     """
     return await _run_script_function_impl(
-        service, user_google_email, script_id, function_name, parameters, dev_mode
+        service, user_google_email, deployment_id, function_name, parameters, dev_mode
     )
 
 
